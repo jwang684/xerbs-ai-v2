@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from app.schemas.safety import SafetyScreenRequest, RelationshipCreateRequest, SafetyRuleCreateRequest, RelationshipDirection, RelationshipQueryResponse, RelationshipType
+from app.schemas.safety import SafetyScreenRequest, RelationshipCreateRequest, SafetyRuleCreateRequest, RelationshipDirection, RelationshipQueryResponse, RelationshipType, SafetyRuleQueryResponse, SafetyRuleType
 from app.services.safety.engine import SafetyEngine
 router=APIRouter(prefix='/api/v1/safety',tags=['clinical-safety'])
 engine=SafetyEngine()
@@ -25,3 +25,11 @@ def list_relationships(
 def rule(req:SafetyRuleCreateRequest):
     try: return engine.create_rule(req)
     except ValueError as e: raise HTTPException(422,detail=str(e)) from e
+
+@router.get('/rules', response_model=SafetyRuleQueryResponse)
+def list_safety_rules(
+    target_entity_id:str=Query(min_length=1,description='Formula or herb id whose persisted safety rules are returned'),
+    rule_type:SafetyRuleType|None=Query(default=None),
+):
+    results=engine.list_safety_rules(target_entity_id,rule_type)
+    return SafetyRuleQueryResponse(target_entity_id=target_entity_id,rule_type=rule_type,count=len(results),results=results)

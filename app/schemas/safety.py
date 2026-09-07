@@ -94,3 +94,57 @@ class RelationshipQueryResponse(BaseModel):
     relationship_type: RelationshipType | None = None
     count: int = 0
     results: list[ClinicalRelationshipRecord] = Field(default_factory=list)
+
+
+class SafetyRuleType(str, Enum):
+    CONTRAINDICATION = 'CONTRAINDICATION'
+    DRUG_INTERACTION = 'DRUG_INTERACTION'
+    ALLERGY = 'ALLERGY'
+    PREGNANCY = 'PREGNANCY'
+    AGE = 'AGE'
+    DIAGNOSIS = 'DIAGNOSIS'
+
+
+SAFETY_RULE_RESULT_MEANING = (
+    'Persisted safety rules only. An empty result means no persisted safety rule was '
+    'found for this entity; it is not a safety determination and must never be read as '
+    'safe, free of contraindications, or eligible for selection.'
+)
+
+
+class SafetyRuleRecord(BaseModel):
+    """One persisted safety_rule row, returned verbatim.
+
+    Target type/name are read from the referenced clinical_entity row. Nothing is
+    inferred from names, indications, TSE metadata or model output.
+    """
+
+    id: str
+    target_entity_id: str
+    target_entity_type: str | None = None
+    target_entity_name: str | None = None
+    rule_type: SafetyRuleType
+    trigger_term: str
+    severity: Literal['INFO', 'WARN', 'HIGH', 'CRITICAL']
+    action: Literal['INFO', 'WARN', 'BLOCK']
+    message: str
+    review_status: str
+    source_id: str | None = None
+    created_by: str
+    created_at: datetime
+
+
+class SafetyRuleQueryResponse(BaseModel):
+    """Persisted safety rules for one entity.
+
+    This endpoint reports stored rules. It never asserts safety: absence of rules
+    is absence of evidence, not evidence of safety. Screening eligibility remains
+    owned by POST /api/v1/safety/screen.
+    """
+
+    target_entity_id: str
+    rule_type: SafetyRuleType | None = None
+    count: int = 0
+    results: list[SafetyRuleRecord] = Field(default_factory=list)
+    absence_of_rules_implies_safety: Literal[False] = False
+    result_meaning: str = SAFETY_RULE_RESULT_MEANING

@@ -2,7 +2,7 @@ from uuid import uuid4
 from sqlalchemy import or_, select
 from app.db.models import ClinicalEntity, ClinicalRelationship, SafetyRule, SourceRegistry
 from app.db.session import get_session_factory
-from app.schemas.safety import SafetyAssessment, SafetyFinding, SafetyScreenRequest, RelationshipCreateRequest, SafetyRuleCreateRequest, ClinicalRelationshipRecord, RelationshipDirection, RelationshipType
+from app.schemas.safety import SafetyAssessment, SafetyFinding, SafetyScreenRequest, RelationshipCreateRequest, SafetyRuleCreateRequest, ClinicalRelationshipRecord, RelationshipDirection, RelationshipType, SafetyRuleRecord, SafetyRuleType
 
 AUTHORIZED={'CLINICAL_REVIEWER','CLINICAL_ADMIN'}
 
@@ -69,6 +69,40 @@ class SafetyEngine:
             if not s.get(SourceRegistry,req.source_id): raise ValueError('Source not found')
             row=SafetyRule(id=f'rule-{uuid4().hex[:16]}',target_entity_id=e.id,rule_type=req.rule_type,trigger_term=req.trigger_term.strip(),severity=req.severity,action=req.action,message=req.message,review_status='REVIEWED',source_id=req.source_id,created_by=req.actor_id)
             s.add(row); s.flush(); return {'id':row.id,'target_entity_id':e.id,'rule_type':row.rule_type,'review_status':row.review_status}
+
+    def list_safety_rules(self, target_entity_id, rule_type=None) -> list[SafetyRuleRecord]:
+        """Persisted safety rules attached to exactly one target entity id.
+
+        Pure read of safety_rule. Rows are returned as stored, with their own
+        review_status exposed; no eligibility rule is applied here so screen()
+        keeps its existing REVIEWED filter as the single source of truth. An
+        empty list means no persisted rule was found - never that the entity is
+        safe or eligible for selection.
+        """
+        with self.Session() as s:
+            stmt=select(SafetyRule).where(SafetyRule.target_entity_id==target_entity_id)
+            if rule_type is not None: stmt=stmt.where(SafetyRule.rule_type==SafetyRuleType(rule_type).value)
+            rows=s.scalars(stmt.order_by(SafetyRule.created_at,SafetyRule.id)).all()
+            target=s.get(ClinicalEntity,target_entity_id) if rows else None
+            return [self._safety_rule_record(r,target) for r in rows]
+
+    @staticmethod
+    def _safety_rule_record(r,target) -> SafetyRuleRecord:
+        return SafetyRuleRecord(
+            id=r.id,
+            target_entity_id=r.target_entity_id,
+            target_entity_type=target.entity_type if target else None,
+            target_entity_name=target.name if target else None,
+            rule_type=SafetyRuleType(r.rule_type),
+            trigger_term=r.trigger_term,
+            severity=r.severity,
+            action=r.action,
+            message=r.message,
+            review_status=r.review_status,
+            source_id=r.source_id,
+            created_by=r.created_by,
+            created_at=r.created_at,
+        )
 
     def _herb_ids_for_formula(self,s,formula_id):
         return list(s.scalars(select(ClinicalRelationship.target_entity_id).where(ClinicalRelationship.source_entity_id==formula_id,ClinicalRelationship.relationship_type=='FORMULA_HERB',ClinicalRelationship.review_status=='REVIEWED')).all())
