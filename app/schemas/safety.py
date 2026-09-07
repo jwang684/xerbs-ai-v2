@@ -1,5 +1,8 @@
-from pydantic import BaseModel, Field
+from datetime import datetime
+from enum import Enum
 from typing import Literal
+
+from pydantic import BaseModel, Field
 
 class PatientContext(BaseModel):
     medications: list[str] = Field(default_factory=list)
@@ -47,3 +50,47 @@ class SafetyRuleCreateRequest(BaseModel):
     source_id: str | None = None
     actor_id: str
     actor_role: str = 'CLINICAL_REVIEWER'
+
+
+class RelationshipType(str, Enum):
+    PATTERN_FORMULA = 'PATTERN_FORMULA'
+    FORMULA_HERB = 'FORMULA_HERB'
+
+
+class RelationshipDirection(str, Enum):
+    """Direction of a relationship relative to the queried entity."""
+
+    OUTGOING = 'outgoing'
+    INCOMING = 'incoming'
+    BOTH = 'both'
+
+
+class ClinicalRelationshipRecord(BaseModel):
+    """One persisted clinical_relationship row, returned verbatim.
+
+    Entity type/name are read from the referenced clinical_entity rows so a
+    detail view can render the counterpart without a second call. Nothing is
+    inferred from names, indications, TSE data or model output.
+    """
+
+    id: str
+    source_entity_id: str
+    source_entity_type: str | None = None
+    source_entity_name: str | None = None
+    target_entity_id: str
+    target_entity_type: str | None = None
+    target_entity_name: str | None = None
+    relationship_type: RelationshipType
+    review_status: str
+    source_id: str | None = None
+    created_by: str
+    created_at: datetime
+    direction: Literal['outgoing', 'incoming']
+
+
+class RelationshipQueryResponse(BaseModel):
+    entity_id: str
+    direction: RelationshipDirection
+    relationship_type: RelationshipType | None = None
+    count: int = 0
+    results: list[ClinicalRelationshipRecord] = Field(default_factory=list)

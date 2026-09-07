@@ -1,8 +1,8 @@
 from uuid import uuid4
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from app.db.models import ClinicalEntity, ClinicalRelationship, SafetyRule, SourceRegistry
 from app.db.session import get_session_factory
-from app.schemas.safety import SafetyAssessment, SafetyFinding, SafetyScreenRequest, RelationshipCreateRequest, SafetyRuleCreateRequest
+from app.schemas.safety import SafetyAssessment, SafetyFinding, SafetyScreenRequest, RelationshipCreateRequest, SafetyRuleCreateRequest, ClinicalRelationshipRecord, RelationshipDirection, RelationshipType
 
 AUTHORIZED={'CLINICAL_REVIEWER','CLINICAL_ADMIN'}
 
@@ -20,6 +20,44 @@ class SafetyEngine:
             if req.source_id and not s.get(SourceRegistry,req.source_id): raise ValueError('Source not found')
             row=ClinicalRelationship(id=f'rel-{uuid4().hex[:16]}',source_entity_id=a.id,target_entity_id=b.id,relationship_type=req.relationship_type,review_status='REVIEWED',source_id=req.source_id,created_by=req.actor_id)
             s.add(row); s.flush(); return {'id':row.id,'source_entity_id':a.id,'target_entity_id':b.id,'relationship_type':row.relationship_type,'review_status':row.review_status}
+
+    def list_relationships(self, entity_id, relationship_type=None, direction=RelationshipDirection.BOTH) -> list[ClinicalRelationshipRecord]:
+        """Persisted clinical relationships touching exactly one entity id.
+
+        Pure read of clinical_relationship. Rows are returned as stored, with
+        their own review_status exposed; no eligibility rule is applied here so
+        ranking and safety keep their existing REVIEWED filters as the single
+        source of truth.
+        """
+        with self.Session() as s:
+            stmt=select(ClinicalRelationship)
+            if direction==RelationshipDirection.OUTGOING: stmt=stmt.where(ClinicalRelationship.source_entity_id==entity_id)
+            elif direction==RelationshipDirection.INCOMING: stmt=stmt.where(ClinicalRelationship.target_entity_id==entity_id)
+            else: stmt=stmt.where(or_(ClinicalRelationship.source_entity_id==entity_id,ClinicalRelationship.target_entity_id==entity_id))
+            if relationship_type is not None: stmt=stmt.where(ClinicalRelationship.relationship_type==RelationshipType(relationship_type).value)
+            rows=s.scalars(stmt.order_by(ClinicalRelationship.created_at,ClinicalRelationship.id)).all()
+            ids={x for r in rows for x in (r.source_entity_id,r.target_entity_id)}
+            named={e.id:e for e in s.scalars(select(ClinicalEntity).where(ClinicalEntity.id.in_(ids))).all()} if ids else {}
+            return [self._relationship_record(r,named,entity_id) for r in rows]
+
+    @staticmethod
+    def _relationship_record(r,named,entity_id) -> ClinicalRelationshipRecord:
+        src=named.get(r.source_entity_id); tgt=named.get(r.target_entity_id)
+        return ClinicalRelationshipRecord(
+            id=r.id,
+            source_entity_id=r.source_entity_id,
+            source_entity_type=src.entity_type if src else None,
+            source_entity_name=src.name if src else None,
+            target_entity_id=r.target_entity_id,
+            target_entity_type=tgt.entity_type if tgt else None,
+            target_entity_name=tgt.name if tgt else None,
+            relationship_type=RelationshipType(r.relationship_type),
+            review_status=r.review_status,
+            source_id=r.source_id,
+            created_by=r.created_by,
+            created_at=r.created_at,
+            direction='outgoing' if r.source_entity_id==entity_id else 'incoming',
+        )
 
     def create_rule(self, req: SafetyRuleCreateRequest):
         if req.actor_role not in AUTHORIZED: raise ValueError('Reviewer role not authorized')
