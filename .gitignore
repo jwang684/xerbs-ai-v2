@@ -1,0 +1,16 @@
+# Virtual environments
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Test tooling
+.pytest_cache/
+
+# Local SQLite database (created by running the app/tests)
+xerbs_ai_v2.db
+
+# Local secrets — the checked-in template stays tracked
+.env
+!.env.example

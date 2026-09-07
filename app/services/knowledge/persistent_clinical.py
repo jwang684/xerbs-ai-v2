@@ -4,8 +4,12 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship
 from app.db.session import get_session_factory
-from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats
-from app.schemas.clinical_workflow import ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
+from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef
+from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
+
+# Snapshot keys promoted to dedicated ClinicalEntityDetail fields; everything
+# else in the snapshot is the entity's clinical content.
+DETAIL_PROMOTED_KEYS = {"entity_type","review_status","version","sources","clinical_ranking_eligible","name","retired_at","superseded_by_id","migration_origin","id","pattern_id","formula_id","herb_id"}
 
 
 class PersistentWorkflowError(ValueError):
@@ -91,6 +95,30 @@ class PersistentClinicalStore:
             snap=self._copy_latest_with_status(s,e,"RETIRED"); snap["superseded_by_id"]=replacement.id; self._version(s,e,snap,actor)
             self._add_event(s,e.entity_type,e.id,"SUPERSEDED",actor,before,"RETIRED",e.current_version,None,actor_role,{"superseded_by_id":replacement.id})
             return self._serialize(s,e,snap)
+
+    def get_entity_detail(self, entity_type, entity_id) -> ClinicalEntityDetail:
+        """Current canonical state of one entity, resolved by exact type + id."""
+        with self.Session() as s:
+            e=self._get_entity(s,entity_type,entity_id)
+            snap=self._latest_snapshot(s,e.id)
+            serialized=self._serialize(s,e,snap)
+            sources=self._registered_sources(s,e.id)
+            return ClinicalEntityDetail(
+                entity_id=e.id,
+                entity_type=ClinicalEntityType(e.entity_type),
+                name=e.name,
+                version=e.current_version,
+                review_status=ReviewStatus(e.review_status),
+                clinical_ranking_eligible=serialized["clinical_ranking_eligible"],
+                sources=sources,
+                source_count=len(sources),
+                content={k:v for k,v in serialized.items() if k not in DETAIL_PROMOTED_KEYS},
+                migration_origin=e.migration_origin,
+                retired_at=e.retired_at,
+                superseded_by_id=e.superseded_by_id,
+                created_at=e.created_at,
+                updated_at=e.updated_at,
+            )
 
     def get_history(self, entity_type, entity_id):
         with self.Session() as s:
@@ -185,6 +213,9 @@ class PersistentClinicalStore:
         d=dict(self._latest_snapshot(s,e.id)); d['review_status']=status; d['version']=e.current_version; d['clinical_ranking_eligible']=status=="REVIEWED" and self._source_count(s,e.id)>0; return d
     def _version(self,s,e,snap,actor): s.add(ClinicalEntityVersion(id=f"ver-{uuid4().hex[:16]}",entity_id=e.id,version=e.current_version,snapshot=snap,created_by=actor))
     def _source_count(self,s,eid): return s.scalar(select(func.count()).select_from(EntitySource).where(EntitySource.entity_id==eid)) or 0
+    def _registered_sources(self,s,eid):
+        rows=s.scalars(select(SourceRegistry).join(EntitySource,EntitySource.source_id==SourceRegistry.source_id).where(EntitySource.entity_id==eid).order_by(SourceRegistry.source_id)).all()
+        return [SourceRef(source_id=r.source_id,title=r.title,citation=r.citation,url=r.url,source_type=r.source_type) for r in rows]
     def _serialize(self,s,e,snap):
         d=dict(snap); d['entity_type']=e.entity_type; d['clinical_ranking_eligible']=e.review_status=="REVIEWED" and self._source_count(s,e.id)>0; d['retired_at']=e.retired_at; d['superseded_by_id']=e.superseded_by_id; return d
     def _get_entity(self,s,entity_type,eid):

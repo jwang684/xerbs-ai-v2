@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.schemas.clinical_knowledge import CorpusSearchRequest
-from app.schemas.clinical_workflow import ClinicalEntityType, IngestionBatchRequest, ReviewActionRequest, SubmitForReviewRequest, RetireRequest, SupersedeRequest
+from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, ReviewActionRequest, SubmitForReviewRequest, RetireRequest, SupersedeRequest
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore, PersistentWorkflowError
 
 router = APIRouter(prefix="/api/v1/knowledge/clinical", tags=["clinical-knowledge"])
@@ -46,6 +46,11 @@ def retire(entity_type:ClinicalEntityType,entity_id:str,request:RetireRequest):
 def supersede(entity_type:ClinicalEntityType,entity_id:str,request:SupersedeRequest):
     try: return store.supersede(entity_type,entity_id,request.superseded_by_id,request.actor_id,request.actor_role,request.expected_version)
     except PersistentWorkflowError as e: raise HTTPException(409,detail=str(e)) from e
+
+@router.get("/entities/{entity_type}/{entity_id}", response_model=ClinicalEntityDetail)
+def entity_detail(entity_type:ClinicalEntityType,entity_id:str):
+    try: return store.get_entity_detail(entity_type,entity_id)
+    except PersistentWorkflowError as e: raise HTTPException(404,detail=str(e)) from e
 
 @router.get("/entities/{entity_type}/{entity_id}/history")
 def history(entity_type:ClinicalEntityType,entity_id:str):

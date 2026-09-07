@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.clinical_knowledge import SourceRef
+from app.schemas.clinical_knowledge import ReviewStatus, SourceRef
 
 
 class ClinicalEntityType(str, Enum):
@@ -71,6 +71,29 @@ class WorkflowEvent(BaseModel):
     version: int
     notes: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ClinicalEntityDetail(BaseModel):
+    """Current canonical state of exactly one clinical corpus entity.
+
+    Only fields the corpus actually persists are exposed; nothing is
+    synthesised when the underlying record does not carry it.
+    """
+
+    entity_id: str
+    entity_type: ClinicalEntityType
+    name: str
+    version: int
+    review_status: ReviewStatus
+    clinical_ranking_eligible: bool
+    sources: list[SourceRef] = Field(default_factory=list)
+    source_count: int = 0
+    content: dict[str, Any] = Field(default_factory=dict)
+    migration_origin: str | None = None
+    retired_at: datetime | None = None
+    superseded_by_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class IngestionBatchResult(BaseModel):
