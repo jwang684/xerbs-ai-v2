@@ -270,7 +270,7 @@ class PersistentClinicalStore:
                 name=e.name,
                 current_version=e.current_version,
                 review_status=ReviewStatus(e.review_status),
-                clinical_ranking_eligible=e.review_status=="REVIEWED" and self._source_count(s,e.id)>0,
+                clinical_ranking_eligible=self._is_ranking_eligible(s,e.id,e.review_status),
             ) for e in rows]
 
     def get_history(self, entity_type, entity_id):
@@ -297,7 +297,7 @@ class PersistentClinicalStore:
     def stats(self):
         with self.Session() as s:
             counts={t:s.scalar(select(func.count()).select_from(ClinicalEntity).where(ClinicalEntity.entity_type==t)) or 0 for t in ["pattern","formula","herb"]}
-            eligible={t:s.scalar(select(func.count()).select_from(ClinicalEntity).where(ClinicalEntity.entity_type==t,ClinicalEntity.review_status=="REVIEWED").where(select(func.count()).select_from(EntitySource).where(EntitySource.entity_id==ClinicalEntity.id).correlate(ClinicalEntity).scalar_subquery()>0)) or 0 for t in ["pattern","formula","herb"]}
+            eligible={t:s.scalar(select(func.count()).select_from(ClinicalEntity).where(ClinicalEntity.entity_type==t,ClinicalEntity.review_status=="REVIEWED").where(select(func.count()).select_from(EntitySource).join(SourceRegistry,SourceRegistry.source_id==EntitySource.source_id).where(EntitySource.entity_id==ClinicalEntity.id,SourceRegistry.review_status=="REVIEWED").correlate(ClinicalEntity).scalar_subquery()>0)) or 0 for t in ["pattern","formula","herb"]}
             return CorpusStats(patterns=counts['pattern'],formulas=counts['formula'],herbs=counts['herb'],ranking_eligible_patterns=eligible['pattern'],ranking_eligible_formulas=eligible['formula'],ranking_eligible_herbs=eligible['herb'])
 
     def search(self, query, entity_types, reviewed_only=False, limit=20):
@@ -325,9 +325,11 @@ class PersistentClinicalStore:
             )).all()
             for rel in rels:
                 formula=s.get(ClinicalEntity,rel.target_entity_id)
-                if formula is None or formula.entity_type!="formula" or formula.review_status!="REVIEWED":
+                if formula is None or formula.entity_type!="formula":
                     continue
-                if self._source_count(s,formula.id)==0:
+                # Same canonical gate the API reports: REVIEWED formula backed by
+                # at least one REVIEWED Source.
+                if not self._is_ranking_eligible(s,formula.id,formula.review_status):
                     continue
                 snap=self._latest_snapshot(s,formula.id)
                 item=scored.setdefault(formula.id,{"count":0,"patterns":[],"snapshot":snap})
@@ -352,7 +354,8 @@ class PersistentClinicalStore:
         with self.Session() as s:
             rows=s.scalars(select(ClinicalEntity).where(ClinicalEntity.entity_type=="formula",ClinicalEntity.review_status=="REVIEWED")).all()
             for e in rows:
-                if self._source_count(s,e.id)==0: continue
+                # Same canonical gate the API reports.
+                if not self._is_ranking_eligible(s,e.id,e.review_status): continue
                 snap=self._latest_snapshot(s,e.id); inds=snap.get('indications',[]); matched=[x for x in inds if x in normalized or x in (text_input or '')]
                 if matched: scored.append((len(matched),e.id,snap,matched))
         scored.sort(key=lambda x:(-x[0],x[1])); return [{"formula_id":eid,"name":snap.get('name',''),"confidence":min(.85,.40+.10*score),"rationale":f"Reviewed corpus indication overlap: {', '.join(matched)}","ingredients":snap.get('ingredients',[]),"safety_flags":list(dict.fromkeys([*snap.get('contraindications',[]),*snap.get('interaction_flags',[]),"PRACTITIONER_REVIEW_REQUIRED"]))} for score,eid,snap,matched in scored[:3]]
@@ -438,14 +441,28 @@ class PersistentClinicalStore:
         return d
     def _latest_snapshot(self,s,eid): return s.scalar(select(ClinicalEntityVersion.snapshot).where(ClinicalEntityVersion.entity_id==eid).order_by(ClinicalEntityVersion.version.desc()).limit(1)) or {}
     def _copy_latest_with_status(self,s,e,status):
-        d=dict(self._latest_snapshot(s,e.id)); d['review_status']=status; d['version']=e.current_version; d['clinical_ranking_eligible']=status=="REVIEWED" and self._source_count(s,e.id)>0; return d
+        d=dict(self._latest_snapshot(s,e.id)); d['review_status']=status; d['version']=e.current_version; d['clinical_ranking_eligible']=self._is_ranking_eligible(s,e.id,status); return d
     def _version(self,s,e,snap,actor): s.add(ClinicalEntityVersion(id=f"ver-{uuid4().hex[:16]}",entity_id=e.id,version=e.current_version,snapshot=snap,created_by=actor))
     def _source_count(self,s,eid): return s.scalar(select(func.count()).select_from(EntitySource).where(EntitySource.entity_id==eid)) or 0
+    def _reviewed_source_count(self,s,eid):
+        """Attached Sources that are themselves REVIEWED."""
+        return s.scalar(select(func.count()).select_from(EntitySource)
+                        .join(SourceRegistry,SourceRegistry.source_id==EntitySource.source_id)
+                        .where(EntitySource.entity_id==eid,SourceRegistry.review_status=="REVIEWED")) or 0
+    def _is_ranking_eligible(self,s,eid,review_status):
+        """THE canonical clinical ranking eligibility rule.
+
+        An entity ranks only when it is REVIEWED and at least one of its
+        persisted entity_source references points at a REVIEWED Source. One
+        qualifying Source is enough; the others may be in any state. Every
+        eligibility value the API reports derives from this one method.
+        """
+        return review_status=="REVIEWED" and self._reviewed_source_count(s,eid)>0
     def _registered_sources(self,s,eid):
         rows=s.scalars(select(SourceRegistry).join(EntitySource,EntitySource.source_id==SourceRegistry.source_id).where(EntitySource.entity_id==eid).order_by(SourceRegistry.source_id)).all()
         return [SourceRef(source_id=r.source_id,title=r.title,citation=r.citation,url=r.url,source_type=r.source_type) for r in rows]
     def _serialize(self,s,e,snap):
-        d=dict(snap); d['entity_type']=e.entity_type; d['clinical_ranking_eligible']=e.review_status=="REVIEWED" and self._source_count(s,e.id)>0; d['retired_at']=e.retired_at; d['superseded_by_id']=e.superseded_by_id; return d
+        d=dict(snap); d['entity_type']=e.entity_type; d['clinical_ranking_eligible']=self._is_ranking_eligible(s,e.id,e.review_status); d['retired_at']=e.retired_at; d['superseded_by_id']=e.superseded_by_id; return d
     def _get_entity(self,s,entity_type,eid):
         e=s.get(ClinicalEntity,eid)
         if not e or e.entity_type != entity_type.value: raise PersistentWorkflowError("Clinical corpus entity not found")

@@ -377,9 +377,9 @@ def test_w2_ingestion_can_reuse_a_reviewed_source():
     assert c.get(f'{SOURCES}/{s}').json()['review_status']=='REVIEWED'
 
 
-# --- X: eligibility unchanged ------------------------------------------------
-def test_x_clinical_ranking_eligible_is_unchanged_by_source_governance():
-    """Intentionally temporary: a DRAFT Source still permits entity eligibility."""
+# --- X: eligibility gated on Source governance -------------------------------
+def test_x_clinical_ranking_eligible_requires_a_reviewed_source():
+    """Phase 12C-2D3 closed this gap: a DRAFT Source no longer confers ranking."""
     s=sid()
     r=_ingest({'source_id':s,'title':'Draft Source','source_type':'REFERENCE'})
     eid=r.json()['created_entity_ids'][0]
@@ -389,9 +389,13 @@ def test_x_clinical_ranking_eligible_is_unchanged_by_source_governance():
     assert ok.status_code==200, ok.text
     detail=c.get(f'{CLINICAL}/entities/formula/{eid}').json()
     assert detail['review_status']=='REVIEWED'
-    assert detail['clinical_ranking_eligible'] is True      # Source is still DRAFT
+    assert detail['clinical_ranking_eligible'] is False     # Source is still DRAFT
     assert c.get(f'{SOURCES}/{s}').json()['review_status']=='DRAFT'
-    assert c.get(f'{SOURCES}/{s}/entities').json()['results'][0]['clinical_ranking_eligible'] is True
+    assert c.get(f'{SOURCES}/{s}/entities').json()['results'][0]['clinical_ranking_eligible'] is False
+    # Approving the Source is what grants eligibility.
+    v=submit(s,1).json()['version']
+    assert review(s,v,'APPROVE').status_code==200
+    assert c.get(f'{CLINICAL}/entities/formula/{eid}').json()['clinical_ranking_eligible'] is True
 
 
 # --- Y ---------------------------------------------------------------------

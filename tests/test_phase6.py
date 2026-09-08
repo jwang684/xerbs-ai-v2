@@ -19,10 +19,21 @@ def create_formula(s,name="Persistent Formula",symptom="持久症状",with_sourc
     b=s.ingest(IngestionBatchRequest(submitted_by="importer",source_label="p6",items=[IngestionItem(entity_type=ClinicalEntityType.FORMULA,payload={"name":name,"indications":[symptom],"ingredients":["Herb A"]},sources=[source()] if with_source else [])]))
     return b.created_entity_ids[0]
 
+def approve_source(s, source_id):
+    """Phase 12C-2D3A: retrieval requires at least one REVIEWED Source."""
+    from app.schemas.clinical_knowledge import SourceReviewActionRequest, SourceReviewDecision, SourceSubmitReviewRequest
+    cur = s.get_source(source_id)
+    cur = s.submit_source_for_review(source_id, SourceSubmitReviewRequest(submitted_by="curator", expected_version=cur.version))
+    s.review_source(source_id, SourceReviewActionRequest(reviewer_id="reviewer", reviewer_role="CLINICAL_REVIEWER",
+                                                         decision=SourceReviewDecision.APPROVE, expected_version=cur.version))
+
+
 def test_persistent_round_trip_across_store_instances():
     engine=create_engine("sqlite://",connect_args={"check_same_thread":False},poolclass=StaticPool); Base.metadata.create_all(engine); Session=sessionmaker(bind=engine,expire_on_commit=False)
     a=PersistentClinicalStore(Session); eid=create_formula(a); a.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit",expected_version=1); a.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="reviewer",reviewer_role="CLINICAL_REVIEWER",decision=ReviewDecision.APPROVE,expected_version=2))
     b=PersistentClinicalStore(Session)
+    assert b.eligible_formula_candidates(["持久症状"],"") == []      # Source still DRAFT
+    approve_source(b,"src-p6")
     assert b.eligible_formula_candidates(["持久症状"],"")[0]["name"] == "Persistent Formula"
     assert len(b.get_history(ClinicalEntityType.FORMULA,eid)) == 3
 
@@ -39,7 +50,8 @@ def test_reviewer_role_enforced():
     except PersistentWorkflowError as e: assert "role" in str(e).lower()
 
 def test_retired_formula_no_longer_ranks():
-    s=store(); eid=create_formula(s); s.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit"); s.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="r",decision=ReviewDecision.APPROVE)); assert s.eligible_formula_candidates(["持久症状"],"")
+    s=store(); eid=create_formula(s); s.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit"); s.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="r",decision=ReviewDecision.APPROVE))
+    approve_source(s,"src-p6"); assert s.eligible_formula_candidates(["持久症状"],"")
     s.retire(ClinicalEntityType.FORMULA,eid,"r","CLINICAL_REVIEWER")
     assert s.eligible_formula_candidates(["持久症状"],"") == []
     assert s.get_history(ClinicalEntityType.FORMULA,eid)[-1]["review_status"] == "RETIRED"

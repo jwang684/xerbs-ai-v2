@@ -14,6 +14,22 @@ def ingest_review(entity_type,payload,source_id,name):
     r=c.post(f'/api/v1/knowledge/clinical/entities/{entity_type}/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':ver}); assert r.status_code==200, r.text
     return eid
 
+def ensure_source_reviewed(client_, source_id):
+    """Idempotently drive a Source to REVIEWED (Phase 12C-2D3A retrieval gate)."""
+    base = '/api/v1/knowledge/clinical/sources'
+    cur = client_.get(f'{base}/{source_id}').json()
+    if cur['review_status'] == 'REVIEWED':
+        return
+    if cur['review_status'] == 'DRAFT':
+        r = client_.post(f'{base}/{source_id}/submit-review', json={'submitted_by': 'curator', 'expected_version': cur['version']})
+        assert r.status_code == 200, r.text
+        cur = r.json()
+    assert cur['review_status'] == 'IN_REVIEW', cur['review_status']
+    r = client_.post(f'{base}/{source_id}/review', json={'reviewer_id': 'reviewer', 'reviewer_role': 'CLINICAL_REVIEWER',
+                                                         'decision': 'APPROVE', 'expected_version': cur['version']})
+    assert r.status_code == 200, r.text
+
+
 def test_safety_relationship_and_blocking_rule():
     formula=ingest_review('formula',{'name':'Phase7 Formula','indications':['phase7 symptom'],'ingredients':['Phase7 Herb']},'src-p7-f','Phase7 Formula')
     herb=ingest_review('herb',{'name':'Phase7 Herb'},'src-p7-h','Phase7 Herb')
@@ -26,6 +42,7 @@ def test_safety_relationship_and_blocking_rule():
     assert s.json()['eligible_for_selection'] is False
     assert s.json()['risk_level']=='CRITICAL'
 
+    ensure_source_reviewed(c,'src-p7-f')
     rec=c.post('/api/v1/recommendations/generate',json={'text_input':'phase7 symptom','symptoms':['phase7 symptom'],'patient_context':{'medications':['warfarin']}})
     assert rec.status_code==200, rec.text
     body=rec.json(); assert body['formula_candidates']

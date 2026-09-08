@@ -102,6 +102,15 @@ def test_sources_are_preserved_on_detail():
     assert after['sources'][0]['source_id']==source_id
 
 
+def approve_source(source_id):
+    """Phase 12C-2D3: ranking requires at least one REVIEWED Source."""
+    cur=c.get(f'{BASE}/sources/{source_id}').json()
+    r=c.post(f'{BASE}/sources/{source_id}/submit-review',json={'submitted_by':'phase12b1','expected_version':cur['version']})
+    assert r.status_code==200, r.text
+    r=c.post(f'{BASE}/sources/{source_id}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
+    assert r.status_code==200, r.text
+
+
 def test_ranking_eligibility_is_preserved_not_recomputed_loosely():
     eid=draft_formula()
     assert c.get(f'{BASE}/entities/formula/{eid}').json()['clinical_ranking_eligible'] is False
@@ -109,6 +118,10 @@ def test_ranking_eligibility_is_preserved_not_recomputed_loosely():
     reviewed=c.get(f'{BASE}/entities/formula/{eid}').json()
     assert reviewed['review_status']=='REVIEWED'
     assert reviewed['source_count']>0
+    # A REVIEWED entity whose Source is still DRAFT does not rank.
+    assert reviewed['clinical_ranking_eligible'] is False
+    approve_source(reviewed['sources'][0]['source_id'])
+    reviewed=c.get(f'{BASE}/entities/formula/{eid}').json()
     assert reviewed['clinical_ranking_eligible'] is True
     # Retirement removes eligibility.
     r=c.post(f'{BASE}/entities/formula/{eid}/retire',json={'actor_id':'reviewer','actor_role':'CLINICAL_REVIEWER'})

@@ -114,11 +114,30 @@ def test_phase5_api_ingest_review_history_round_trip():
 
     approve = client.post(f'/api/v1/knowledge/clinical/entities/formula/{entity_id}/review', json={"reviewer_id": "api-reviewer", "decision": "APPROVE"})
     assert approve.status_code == 200
-    assert approve.json()["clinical_ranking_eligible"] is True
+    assert approve.json()["review_status"] == "REVIEWED"
+    # Since Phase 12C-2D3 ranking also requires a REVIEWED Source; "api-source"
+    # is only ingested, so it stays DRAFT and the entity does not rank.
+    assert approve.json()["clinical_ranking_eligible"] is False
 
     history = client.get(f'/api/v1/knowledge/clinical/entities/formula/{entity_id}/history')
     assert history.status_code == 200
     assert len(history.json()["results"]) == 3
+
+
+def ensure_source_reviewed(client_, source_id):
+    """Idempotently drive a Source to REVIEWED (Phase 12C-2D3A retrieval gate)."""
+    base = '/api/v1/knowledge/clinical/sources'
+    cur = client_.get(f'{base}/{source_id}').json()
+    if cur['review_status'] == 'REVIEWED':
+        return
+    if cur['review_status'] == 'DRAFT':
+        r = client_.post(f'{base}/{source_id}/submit-review', json={'submitted_by': 'curator', 'expected_version': cur['version']})
+        assert r.status_code == 200, r.text
+        cur = r.json()
+    assert cur['review_status'] == 'IN_REVIEW', cur['review_status']
+    r = client_.post(f'{base}/{source_id}/review', json={'reviewer_id': 'reviewer', 'reviewer_role': 'CLINICAL_REVIEWER',
+                                                         'decision': 'APPROVE', 'expected_version': cur['version']})
+    assert r.status_code == 200, r.text
 
 
 def test_reviewed_api_formula_enters_recommendation_pipeline():
@@ -134,6 +153,7 @@ def test_reviewed_api_formula_enters_recommendation_pipeline():
     entity_id = ingest.json()["created_entity_ids"][0]
     client.post(f'/api/v1/knowledge/clinical/entities/formula/{entity_id}/submit-review', json={"submitted_by": "pipeline-submit"})
     client.post(f'/api/v1/knowledge/clinical/entities/formula/{entity_id}/review', json={"reviewer_id": "pipeline-reviewer", "decision": "APPROVE"})
+    ensure_source_reviewed(client, "pipeline-source")
 
     response = client.post('/api/v1/recommendations/generate', json={
         "request_id": "phase5-pipeline-request",

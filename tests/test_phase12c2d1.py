@@ -267,8 +267,8 @@ def test_j_phase12c2a_conflict_gate_still_enforced():
     assert dup.status_code==422, dup.text
 
 
-# --- K: eligibility unchanged ----------------------------------------------
-def test_k_clinical_ranking_eligibility_behavior_is_unchanged():
+# --- K: eligibility ---------------------------------------------------------
+def test_k_clinical_ranking_eligibility_requires_a_reviewed_source():
     s,eid=_seed_source()
     detail=c.get(f'{CLINICAL}/entities/formula/{eid}').json()
     assert detail['review_status']=='DRAFT'
@@ -278,9 +278,10 @@ def test_k_clinical_ranking_eligibility_behavior_is_unchanged():
     r=c.post(f'{CLINICAL}/entities/formula/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
     assert r.status_code==200, r.text
     after=c.get(f'{CLINICAL}/entities/formula/{eid}').json()
-    # Still eligible on an entity_source reference alone: the Source is DRAFT and
-    # that must NOT yet affect eligibility in this phase.
+    # Phase 12C-2D3: an entity_source reference alone is no longer enough; the
+    # referenced Source must itself be REVIEWED.
     assert after['review_status']=='REVIEWED'
-    assert after['clinical_ranking_eligible'] is True
     assert after['source_count']==1
-    assert c.get(f'{SOURCES}/{s}/entities').json()['results'][0]['clinical_ranking_eligible'] is True
+    assert after['clinical_ranking_eligible'] is False
+    assert c.get(f'{SOURCES}/{s}').json()['review_status']=='DRAFT'
+    assert c.get(f'{SOURCES}/{s}/entities').json()['results'][0]['clinical_ranking_eligible'] is False

@@ -52,6 +52,15 @@ def _reviewed(store, typ, name, source_id, **payload):
     return eid
 
 
+def approve_source(s, source_id):
+    """Phase 12C-2D3A: retrieval requires at least one REVIEWED Source."""
+    from app.schemas.clinical_knowledge import SourceReviewActionRequest, SourceReviewDecision, SourceSubmitReviewRequest
+    cur = s.get_source(source_id)
+    cur = s.submit_source_for_review(source_id, SourceSubmitReviewRequest(submitted_by="curator", expected_version=cur.version))
+    s.review_source(source_id, SourceReviewActionRequest(reviewer_id="reviewer", reviewer_role="CLINICAL_REVIEWER",
+                                                         decision=SourceReviewDecision.APPROVE, expected_version=cur.version))
+
+
 def test_pattern_formula_relationship_retrieval_is_deterministic():
     engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
     Base.metadata.create_all(engine); Session=sessionmaker(bind=engine,expire_on_commit=False)
@@ -60,6 +69,8 @@ def test_pattern_formula_relationship_retrieval_is_deterministic():
     fid=_reviewed(store,ClinicalEntityType.FORMULA,'Phase9 Formula','p9-formula',ingredients=['Herb X'])
     with Session.begin() as s:
         s.add(ClinicalRelationship(id='rel-phase9',source_entity_id=pid,target_entity_id=fid,relationship_type='PATTERN_FORMULA',review_status='REVIEWED',source_id=None,created_by='reviewer'))
+    assert store.eligible_formula_candidates_for_patterns([pid])==[]   # Sources still DRAFT
+    approve_source(store,'p9-formula')
     found=store.eligible_formula_candidates_for_patterns([pid])
     assert found and found[0]['formula_id']==fid
     assert 'pattern→formula' in found[0]['rationale']
