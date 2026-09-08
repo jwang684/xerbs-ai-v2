@@ -4,7 +4,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship
 from app.db.session import get_session_factory
-from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef
+from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
 
 # Snapshot keys promoted to dedicated ClinicalEntityDetail fields; everything
@@ -14,6 +14,22 @@ DETAIL_PROMOTED_KEYS = {"entity_type","review_status","version","sources","clini
 
 class PersistentWorkflowError(ValueError):
     pass
+
+
+class SourceConflictError(PersistentWorkflowError):
+    """An existing source_id was resubmitted with different canonical metadata.
+
+    Carries the exact per-field disagreement so the caller can correct the
+    submission. The persisted Source is never mutated; the batch is rejected.
+    """
+
+    def __init__(self, source_id, conflicts):
+        self.source_id = source_id
+        self.conflicts = conflicts
+        super().__init__(f"Source '{source_id}' is already registered with different canonical metadata")
+
+    def to_detail(self) -> SourceConflictDetail:
+        return SourceConflictDetail(source_id=self.source_id, message=str(self), conflicting_fields=self.conflicts)
 
 
 class PersistentClinicalStore:
@@ -35,10 +51,14 @@ class PersistentClinicalStore:
                 eid=f"{prefix}-{uuid4().hex[:16]}"; ids.append(eid)
                 entity=ClinicalEntity(id=eid, entity_type=item.entity_type.value, name=name, review_status="DRAFT", current_version=1, migration_origin=clean.get("migration_origin"))
                 s.add(entity)
+                self._assert_unique_source_ids(item.sources)
                 for src in item.sources:
                     existing=s.get(SourceRegistry, src.source_id)
                     if existing is None:
                         s.add(SourceRegistry(source_id=src.source_id,title=src.title,citation=src.citation,url=src.url,source_type=src.source_type))
+                    else:
+                        conflicts=self._source_conflicts(existing,src)
+                        if conflicts: raise SourceConflictError(src.source_id,conflicts)
                     s.flush(); s.add(EntitySource(entity_id=eid,source_id=src.source_id))
                 snap=self._snapshot_dict(item.entity_type.value,eid,clean,item.sources,"DRAFT",1)
                 s.add(ClinicalEntityVersion(id=f"ver-{uuid4().hex[:16]}",entity_id=eid,version=1,snapshot=snap,created_by=request.submitted_by))
@@ -203,6 +223,35 @@ class PersistentClinicalStore:
                 snap=self._latest_snapshot(s,e.id); inds=snap.get('indications',[]); matched=[x for x in inds if x in normalized or x in (text_input or '')]
                 if matched: scored.append((len(matched),e.id,snap,matched))
         scored.sort(key=lambda x:(-x[0],x[1])); return [{"formula_id":eid,"name":snap.get('name',''),"confidence":min(.85,.40+.10*score),"rationale":f"Reviewed corpus indication overlap: {', '.join(matched)}","ingredients":snap.get('ingredients',[]),"safety_flags":list(dict.fromkeys([*snap.get('contraindications',[]),*snap.get('interaction_flags',[]),"PRACTITIONER_REVIEW_REQUIRED"]))} for score,eid,snap,matched in scored[:3]]
+
+    @staticmethod
+    def _canonical(value):
+        """Canonical comparison form: trimmed, with empty string treated as absent."""
+        if value is None: return None
+        text=str(value).strip()
+        return text or None
+
+    @classmethod
+    def _source_conflicts(cls,existing,submitted) -> list[SourceFieldConflict]:
+        """Per-field disagreement between a persisted Source and a resubmission.
+
+        Compares only the fields the registry actually persists. Comparison is
+        case-sensitive and whitespace-insensitive; None and '' are equivalent.
+        """
+        pairs=(("title",existing.title,submitted.title),
+               ("citation",existing.citation,submitted.citation),
+               ("url",existing.url,submitted.url),
+               ("source_type",existing.source_type,submitted.source_type))
+        return [SourceFieldConflict(field=f,persisted=cls._canonical(p),submitted=cls._canonical(sub))
+                for f,p,sub in pairs if cls._canonical(p)!=cls._canonical(sub)]
+
+    @staticmethod
+    def _assert_unique_source_ids(sources):
+        seen=set(); duplicates=[]
+        for src in sources:
+            if src.source_id in seen and src.source_id not in duplicates: duplicates.append(src.source_id)
+            seen.add(src.source_id)
+        if duplicates: raise PersistentWorkflowError("Duplicate source_id within one ingestion item: "+", ".join(duplicates))
 
     def _snapshot_dict(self,typ,eid,clean,sources,status,version):
         d={"entity_type":typ,**clean,"review_status":status,"version":version,"sources":[x.model_dump() for x in sources],"clinical_ranking_eligible": status=="REVIEWED" and bool(sources)}

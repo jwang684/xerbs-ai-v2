@@ -1,4 +1,6 @@
 from enum import Enum
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -16,6 +18,28 @@ class SourceRef(BaseModel):
     citation: str | None = None
     url: str | None = None
     source_type: str = "UNSPECIFIED"
+
+
+class SourceFieldConflict(BaseModel):
+    """One canonical Source field whose submitted value differs from the persisted one."""
+
+    field: Literal['title', 'citation', 'url', 'source_type']
+    persisted: str | None = None
+    submitted: str | None = None
+
+
+class SourceConflictDetail(BaseModel):
+    """Machine-readable body for a 409 canonical-source conflict.
+
+    A source_id must never refer to conflicting source metadata. When ingestion
+    submits an existing source_id with different canonical fields the batch is
+    rejected whole; the persisted Source is never mutated or overwritten.
+    """
+
+    error: Literal['SOURCE_METADATA_CONFLICT'] = 'SOURCE_METADATA_CONFLICT'
+    source_id: str
+    message: str
+    conflicting_fields: list[SourceFieldConflict] = Field(default_factory=list)
 
 
 class PatternRecord(BaseModel):

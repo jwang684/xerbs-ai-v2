@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
-from app.schemas.clinical_knowledge import CorpusSearchRequest
+from app.schemas.clinical_knowledge import CorpusSearchRequest, SourceConflictDetail
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, ReviewActionRequest, SubmitForReviewRequest, RetireRequest, SupersedeRequest
-from app.services.knowledge.persistent_clinical import PersistentClinicalStore, PersistentWorkflowError
+from app.services.knowledge.persistent_clinical import PersistentClinicalStore, PersistentWorkflowError, SourceConflictError
 
 router = APIRouter(prefix="/api/v1/knowledge/clinical", tags=["clinical-knowledge"])
 store = PersistentClinicalStore()
@@ -17,9 +17,10 @@ def search(request: CorpusSearchRequest):
 def governance():
     return {"policy":"REVIEW_GATED_PERSISTENT_CLINICAL_CORPUS","clinical_ranking_eligibility":"review_status=REVIEWED AND at_least_one_source","draft_records_may_rank":False,"legacy_tse_symptom_metadata_may_rank":False,"legacy_formula_fixtures_may_rank":False,"trust_score_owned_by_ai_service":False,"ingestion_can_set_review_status":False,"approval_requires_explicit_source":True,"version_history_append_only":True,"persistence":"SQLALCHEMY_DATABASE","optimistic_concurrency":True,"reviewer_role_enforced":True,"retire_and_supersede_supported":True}
 
-@router.post("/ingest")
+@router.post("/ingest", responses={409: {"model": SourceConflictDetail, "description": "Canonical source metadata conflict"}})
 def ingest(request: IngestionBatchRequest):
     try: return store.ingest(request)
+    except SourceConflictError as e: raise HTTPException(409,detail=e.to_detail().model_dump(mode="json")) from e
     except PersistentWorkflowError as e: raise HTTPException(422,detail=str(e)) from e
 
 @router.get("/batches/{batch_id}")
