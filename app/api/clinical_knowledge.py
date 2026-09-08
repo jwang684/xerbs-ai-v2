@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query
-from app.schemas.clinical_knowledge import CorpusSearchRequest, SourceConflictDetail, SourceEntitiesResponse, SourceListResponse, SourceRecord
+from app.schemas.clinical_knowledge import (CorpusSearchRequest, SourceConflictDetail, SourceEntitiesResponse, SourceListResponse, SourceRecord,
+                                            SourceAlreadyExistsDetail, SourceAuditHistoryResponse, SourceCreateRequest, SourceReviewActionRequest,
+                                            SourceReviewHistoryResponse, SourceSubmitReviewRequest)
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, ReviewActionRequest, SubmitForReviewRequest, RetireRequest, SupersedeRequest
-from app.services.knowledge.persistent_clinical import PersistentClinicalStore, PersistentWorkflowError, SourceConflictError
+from app.services.knowledge.persistent_clinical import PersistentClinicalStore, PersistentWorkflowError, SourceConflictError, SourceAlreadyExistsError
 
 router = APIRouter(prefix="/api/v1/knowledge/clinical", tags=["clinical-knowledge"])
 store = PersistentClinicalStore()
@@ -23,6 +25,35 @@ def list_sources(
 ):
     total,results=store.list_sources(source_id,source_type,query,limit,offset)
     return SourceListResponse(count=total,limit=limit,offset=offset,results=results)
+
+@router.post("/sources", response_model=SourceRecord, status_code=201,
+             responses={409: {"model": SourceAlreadyExistsDetail, "description": "source_id already registered"}})
+def create_source(request: SourceCreateRequest):
+    try: return store.create_source(request)
+    except SourceAlreadyExistsError as e: raise HTTPException(409, detail=e.to_detail().model_dump(mode="json")) from e
+    except PersistentWorkflowError as e: raise HTTPException(422, detail=str(e)) from e
+
+@router.post("/sources/{source_id}/submit-review", response_model=SourceRecord)
+def submit_source_review(source_id: str, request: SourceSubmitReviewRequest):
+    try: return store.submit_source_for_review(source_id, request)
+    except PersistentWorkflowError as e: raise HTTPException(409, detail=str(e)) from e
+
+@router.post("/sources/{source_id}/review", response_model=SourceRecord)
+def review_source(source_id: str, request: SourceReviewActionRequest):
+    try: return store.review_source(source_id, request)
+    except PersistentWorkflowError as e: raise HTTPException(409, detail=str(e)) from e
+
+@router.get("/sources/{source_id}/reviews", response_model=SourceReviewHistoryResponse)
+def source_reviews(source_id: str):
+    try: results = store.get_source_reviews(source_id)
+    except PersistentWorkflowError as e: raise HTTPException(404, detail=str(e)) from e
+    return SourceReviewHistoryResponse(source_id=source_id, count=len(results), results=results)
+
+@router.get("/sources/{source_id}/audit", response_model=SourceAuditHistoryResponse)
+def source_audit(source_id: str):
+    try: results = store.get_source_audit(source_id)
+    except PersistentWorkflowError as e: raise HTTPException(404, detail=str(e)) from e
+    return SourceAuditHistoryResponse(source_id=source_id, count=len(results), results=results)
 
 @router.get("/sources/{source_id}", response_model=SourceRecord)
 def get_source(source_id:str):

@@ -2,9 +2,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from sqlalchemy import or_, select, func
 from sqlalchemy.exc import IntegrityError
-from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship
+from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship, SourceReviewEvent
 from app.db.session import get_session_factory
-from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict, SourceRecord, SourceEntityRef
+from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict, SourceRecord, SourceEntityRef, SourceAlreadyExistsDetail, SourceReviewDecision, SourceReviewEventRecord, SourceAuditEventRecord
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
 
 # Snapshot keys promoted to dedicated ClinicalEntityDetail fields; everything
@@ -14,6 +14,34 @@ DETAIL_PROMOTED_KEYS = {"entity_type","review_status","version","sources","clini
 
 class PersistentWorkflowError(ValueError):
     pass
+
+
+# Canonical Source lifecycle. Only these transitions exist; anything else is
+# rejected. REVIEWED -> RETIRED is deliberately not implemented in this phase,
+# and REJECTED is currently terminal.
+SOURCE_TRANSITIONS = {
+    ("DRAFT", "SUBMITTED_FOR_REVIEW"): "IN_REVIEW",
+    ("IN_REVIEW", "APPROVED"): "REVIEWED",
+    ("IN_REVIEW", "REJECTED"): "REJECTED",
+    ("IN_REVIEW", "CHANGES_REQUESTED"): "DRAFT",
+}
+SOURCE_DECISION_ACTIONS = {
+    SourceReviewDecision.APPROVE: "APPROVED",
+    SourceReviewDecision.REJECT: "REJECTED",
+    SourceReviewDecision.REQUEST_CHANGES: "CHANGES_REQUESTED",
+}
+SOURCE_REVIEWER_ROLES = {"CLINICAL_REVIEWER", "CLINICAL_ADMIN"}
+
+
+class SourceAlreadyExistsError(PersistentWorkflowError):
+    """POST /sources targeted a source_id that is already registered."""
+
+    def __init__(self, source_id):
+        self.source_id = source_id
+        super().__init__(f"Source '{source_id}' already exists")
+
+    def to_detail(self) -> SourceAlreadyExistsDetail:
+        return SourceAlreadyExistsDetail(source_id=self.source_id, message=str(self))
 
 
 class SourceConflictError(PersistentWorkflowError):
@@ -139,6 +167,64 @@ class PersistentClinicalStore:
                 created_at=e.created_at,
                 updated_at=e.updated_at,
             )
+
+    def create_source(self, request) -> SourceRecord:
+        """Create one canonical Source in DRAFT.
+
+        Distinct from ingestion reuse: this endpoint never adopts an existing
+        source_id, so a collision is an explicit conflict.
+        """
+        with self.Session.begin() as s:
+            if s.get(SourceRegistry, request.source_id) is not None:
+                raise SourceAlreadyExistsError(request.source_id)
+            now = datetime.now(timezone.utc)
+            row = SourceRegistry(
+                source_id=request.source_id, title=request.title, citation=request.citation,
+                url=request.url, source_type=request.source_type, review_status="DRAFT",
+                version=1, created_by=request.actor_id, reviewed_by=None,
+                created_at=now, updated_at=now,
+            )
+            s.add(row); s.flush()
+            self._add_source_event(s, row, "CREATED", request.actor_id, None, None, "DRAFT")
+            return self._source_record(row)
+
+    def submit_source_for_review(self, source_id, request) -> SourceRecord:
+        """DRAFT -> IN_REVIEW. Canonical bibliographic metadata is untouched."""
+        with self.Session.begin() as s:
+            row = self._get_source(s, source_id)
+            return self._transition(s, row, "SUBMITTED_FOR_REVIEW", request.submitted_by, None,
+                                    request.expected_version, request.notes)
+
+    def review_source(self, source_id, request) -> SourceRecord:
+        """IN_REVIEW -> REVIEWED | REJECTED | DRAFT, by an authorized reviewer."""
+        if request.reviewer_role not in SOURCE_REVIEWER_ROLES:
+            raise PersistentWorkflowError("Reviewer role not authorized")
+        action = SOURCE_DECISION_ACTIONS[request.decision]
+        with self.Session.begin() as s:
+            row = self._get_source(s, source_id)
+            return self._transition(s, row, action, request.reviewer_id, request.reviewer_role,
+                                    request.expected_version, request.notes)
+
+    def get_source_reviews(self, source_id) -> list[SourceReviewEventRecord]:
+        """Persisted source_review_event rows, chronological."""
+        with self.Session() as s:
+            self._get_source(s, source_id)
+            rows = s.scalars(select(SourceReviewEvent).where(SourceReviewEvent.source_id == source_id)
+                             .order_by(SourceReviewEvent.created_at, SourceReviewEvent.event_id)).all()
+            return [SourceReviewEventRecord(
+                event_id=r.event_id, source_id=r.source_id, action=r.action, actor_id=r.actor_id,
+                actor_role=r.actor_role, from_status=r.from_status, to_status=r.to_status,
+                version=r.version, notes=r.notes, created_at=r.created_at) for r in rows]
+
+    def get_source_audit(self, source_id) -> list[SourceAuditEventRecord]:
+        """audit_event rows whose structured source_id matches. Nothing inferred."""
+        with self.Session() as s:
+            self._get_source(s, source_id)
+            rows = s.scalars(select(AuditEvent).where(AuditEvent.source_id == source_id)
+                             .order_by(AuditEvent.created_at, AuditEvent.event_id)).all()
+            return [SourceAuditEventRecord(
+                event_id=r.event_id, event_type=r.event_type, source_id=r.source_id,
+                actor_id=r.actor_id, payload=r.payload or {}, created_at=r.created_at) for r in rows]
 
     def list_sources(self, source_id=None, source_type=None, query=None, limit=20, offset=0):
         """Page of canonical Sources. Returns (total_matching, [SourceRecord]).
@@ -271,13 +357,45 @@ class PersistentClinicalStore:
                 if matched: scored.append((len(matched),e.id,snap,matched))
         scored.sort(key=lambda x:(-x[0],x[1])); return [{"formula_id":eid,"name":snap.get('name',''),"confidence":min(.85,.40+.10*score),"rationale":f"Reviewed corpus indication overlap: {', '.join(matched)}","ingredients":snap.get('ingredients',[]),"safety_flags":list(dict.fromkeys([*snap.get('contraindications',[]),*snap.get('interaction_flags',[]),"PRACTITIONER_REVIEW_REQUIRED"]))} for score,eid,snap,matched in scored[:3]]
 
+    def _transition(self, s, row, action, actor_id, actor_role, expected_version, notes):
+        """Apply one governed Source transition, or fail without writing."""
+        if row.version != expected_version: raise PersistentWorkflowError("VERSION_CONFLICT")
+        target = SOURCE_TRANSITIONS.get((row.review_status, action))
+        if target is None:
+            raise PersistentWorkflowError(f"Cannot {action} a {row.review_status} source")
+        before = row.review_status
+        row.review_status = target
+        row.version += 1
+        row.updated_at = datetime.now(timezone.utc)
+        if action in {"APPROVED", "REJECTED"}: row.reviewed_by = actor_id
+        self._add_source_event(s, row, action, actor_id, actor_role, before, target, notes)
+        return self._source_record(row)
+
+    @staticmethod
+    def _add_source_event(s, row, action, actor_id, actor_role, from_status, to_status, notes=None):
+        """One source_review_event plus one audit_event per transition.
+
+        The audit row carries entity_id=None and the structured source_id, so
+        Source governance never enters the clinical entity_id namespace.
+        """
+        s.add(SourceReviewEvent(
+            event_id=f"srcevt-{uuid4().hex[:16]}", source_id=row.source_id, action=action,
+            actor_id=actor_id, actor_role=actor_role, from_status=from_status,
+            to_status=to_status, version=row.version, notes=notes))
+        s.add(AuditEvent(
+            event_id=f"aud-{uuid4().hex[:16]}", event_type=f"SOURCE_{action}", entity_id=None,
+            source_id=row.source_id, actor_id=actor_id,
+            payload={"from_status": from_status, "to_status": to_status, "version": row.version}))
+
     @staticmethod
     def _escape_like(text):
         return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     @staticmethod
     def _source_record(r) -> SourceRecord:
-        return SourceRecord(source_id=r.source_id,title=r.title,citation=r.citation,url=r.url,source_type=r.source_type,created_at=r.created_at)
+        return SourceRecord(source_id=r.source_id,title=r.title,citation=r.citation,url=r.url,source_type=r.source_type,
+                            review_status=ReviewStatus(r.review_status),version=r.version,created_by=r.created_by,
+                            reviewed_by=r.reviewed_by,created_at=r.created_at,updated_at=r.updated_at)
 
     @staticmethod
     def _get_source(s,source_id):

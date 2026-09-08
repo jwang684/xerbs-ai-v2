@@ -45,7 +45,8 @@ def test_a_list_sources():
     ids={x['source_id'] for x in body['results']}
     assert s in ids
     row=[x for x in body['results'] if x['source_id']==s][0]
-    assert set(row)=={'source_id','title','citation','url','source_type','created_at'}
+    # Governance fields were added to SourceRecord in Phase 12C-2D2.
+    assert set(row)=={'source_id','title','citation','url','source_type','review_status','version','created_by','reviewed_by','created_at','updated_at'}
     assert row['title']==f'Phase12C2B Text {TAG}'
     assert row['citation']=='p.1'
     assert row['url']=='https://example.test/canon'
@@ -141,7 +142,7 @@ def test_g_get_one_existing_source():
     assert r.status_code==200, r.text
     body=r.json()
     assert body['source_id']==s
-    assert set(body)=={'source_id','title','citation','url','source_type','created_at'}
+    assert set(body)=={'source_id','title','citation','url','source_type','review_status','version','created_by','reviewed_by','created_at','updated_at'}
     # Identical to the same row seen through the list endpoint.
     assert body==c.get(SOURCES,params={'source_id':s}).json()['results'][0]
 
@@ -275,7 +276,7 @@ def test_n_typed_openapi_schemas_and_routes():
     assert paths[SOURCES+'/{source_id}']['get']['responses']['200']['content']['application/json']['schema']['$ref']=='#/components/schemas/SourceRecord'
     assert paths[SOURCES+'/{source_id}/entities']['get']['responses']['200']['content']['application/json']['schema']['$ref']=='#/components/schemas/SourceEntitiesResponse'
     comp=spec['components']['schemas']
-    assert set(comp['SourceRecord']['properties'])=={'source_id','title','citation','url','source_type','created_at'}
+    assert set(comp['SourceRecord']['properties'])=={'source_id','title','citation','url','source_type','review_status','version','created_by','reviewed_by','created_at','updated_at'}
     for f in ['count','limit','offset','results']:
         assert f in comp['SourceListResponse']['properties'], f
     for f in ['source_id','count','results']:
@@ -283,9 +284,11 @@ def test_n_typed_openapi_schemas_and_routes():
     assert set(comp['SourceEntityRef']['properties'])=={'entity_id','entity_type','name','current_version','review_status','clinical_ranking_eligible'}
     params={p['name'] for p in paths[SOURCES]['get']['parameters']}
     assert params=={'source_id','source_type','query','limit','offset'}
-    # These endpoints are read-only: no write verbs on any source path.
-    for p in (SOURCES, SOURCES+'/{source_id}', SOURCES+'/{source_id}/entities'):
+    # The read endpoints stay reads. POST /sources was added in Phase 12C-2D2,
+    # but the detail and reverse-lookup paths remain GET-only.
+    for p in (SOURCES+'/{source_id}', SOURCES+'/{source_id}/entities'):
         assert set(paths[p])=={'get'}, (p,set(paths[p]))
+    assert set(paths[SOURCES])=={'get','post'}
 
 
 # --- O ---------------------------------------------------------------------

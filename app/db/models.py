@@ -115,6 +115,9 @@ class AuditEvent(Base):
     event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     event_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Canonical Source identity is kept in its own column rather than sharing the
+    # clinical entity_id namespace, which is unvalidated client-supplied text.
+    source_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

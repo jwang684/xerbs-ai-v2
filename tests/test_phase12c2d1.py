@@ -168,10 +168,14 @@ def test_h_existing_clinical_review_event_fk_remains_intact(migrated):
     finally: con.close()
 
 
-def test_audit_event_is_deliberately_unchanged(migrated):
+def test_audit_event_entity_id_is_never_widened(migrated):
+    """Phase 12C-2D2 added a structured source_id column instead of widening
+    entity_id. entity_id must stay String(64) and stay entity-only."""
     cols=_cols(migrated,'audit_event')
-    assert set(cols)=={'event_id','event_type','entity_id','actor_id','payload','created_at'}
-    assert cols['entity_id']['type']=='VARCHAR(64)'      # not widened in this phase
+    assert set(cols)=={'event_id','event_type','entity_id','source_id','actor_id','payload','created_at'}
+    assert cols['entity_id']['type']=='VARCHAR(64)'      # never widened
+    assert cols['source_id']['type']=='VARCHAR(128)'     # structured Source identity
+    assert cols['source_id']['notnull'] is False
     con=sqlite3.connect(migrated)
     try:
         assert con.execute('PRAGMA foreign_key_list(audit_event)').fetchall()==[]
@@ -182,7 +186,7 @@ def test_audit_event_is_deliberately_unchanged(migrated):
 def test_m_clean_alembic_upgrade_base_to_head(tmp_path):
     db=tmp_path/'clean.db'
     _alembic(db,'upgrade','head')
-    assert '0005_phase12c2d1' in _alembic(db,'current')
+    assert '0006_phase12c2d2' in _alembic(db,'current')
     con=sqlite3.connect(db)
     try:
         tables={r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -216,17 +220,19 @@ def _seed_source():
     return s,r.json()['created_entity_ids'][0]
 
 
-def test_i_source_read_api_contract_is_unchanged():
+def test_i_source_read_api_contract():
+    """Phase 12C-2D2 intentionally added governance state to SourceRecord;
+    every original canonical field is preserved alongside it."""
     s,eid=_seed_source()
     one=c.get(f'{SOURCES}/{s}')
     assert one.status_code==200, one.text
-    # Governance fields must NOT leak into the existing typed contract.
-    assert set(one.json())=={'source_id','title','citation','url','source_type','created_at'}
+    assert set(one.json())=={'source_id','title','citation','url','source_type','review_status','version','created_by','reviewed_by','created_at','updated_at'}
+    assert {'source_id','title','citation','url','source_type','created_at'} <= set(one.json())
     listed=c.get(SOURCES,params={'source_id':s})
     assert listed.status_code==200
     body=listed.json()
     assert set(body)=={'count','limit','offset','results'}
-    assert set(body['results'][0])=={'source_id','title','citation','url','source_type','created_at'}
+    assert set(body['results'][0])=={'source_id','title','citation','url','source_type','review_status','version','created_by','reviewed_by','created_at','updated_at'}
     ents=c.get(f'{SOURCES}/{s}/entities')
     assert ents.status_code==200
     assert set(ents.json())=={'source_id','count','results'}
@@ -235,13 +241,15 @@ def test_i_source_read_api_contract_is_unchanged():
     assert c.get(f'{SOURCES}/src-missing-{TAG}/entities').status_code==404
 
 
-def test_i2_openapi_source_schemas_are_unchanged():
+def test_i2_openapi_source_schemas():
     spec=c.get('/openapi.json').json()
-    assert set(spec['components']['schemas']['SourceRecord']['properties'])=={'source_id','title','citation','url','source_type','created_at'}
-    for name in ('SourceReviewEvent','SourceGovernance','SourceCreateRequest'):
-        assert name not in spec['components']['schemas'], name
-    for p in (SOURCES, SOURCES+'/{source_id}', SOURCES+'/{source_id}/entities'):
-        assert set(spec['paths'][p])=={'get'}      # still read-only, no write verbs
+    assert set(spec['components']['schemas']['SourceRecord']['properties'])=={'source_id','title','citation','url','source_type','review_status','version','created_by','reviewed_by','created_at','updated_at'}
+    # Still no bibliographic fields and no SourceType enum in this line of work.
+    for absent in ('authors','publisher','publication_year','edition','language','doi','isbn','pmid'):
+        assert absent not in spec['components']['schemas']['SourceRecord']['properties'], absent
+    assert 'SourceType' not in spec['components']['schemas']
+    for p in (SOURCES+'/{source_id}', SOURCES+'/{source_id}/entities'):
+        assert set(spec['paths'][p])=={'get'}
 
 
 # --- J: 12C-2A gate ---------------------------------------------------------
