@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException
-from app.schemas.clinical_knowledge import CorpusSearchRequest, SourceConflictDetail
+from fastapi import APIRouter, HTTPException, Query
+from app.schemas.clinical_knowledge import CorpusSearchRequest, SourceConflictDetail, SourceEntitiesResponse, SourceListResponse, SourceRecord
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, ReviewActionRequest, SubmitForReviewRequest, RetireRequest, SupersedeRequest
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore, PersistentWorkflowError, SourceConflictError
 
@@ -12,6 +12,28 @@ def stats(): return store.stats()
 @router.post("/search")
 def search(request: CorpusSearchRequest):
     return {"query":request.query,"reviewed_only":request.reviewed_only,"results":store.search(request.query,request.entity_types,request.reviewed_only,request.limit)}
+
+@router.get("/sources", response_model=SourceListResponse)
+def list_sources(
+    source_id:str|None=Query(default=None,min_length=1,description="Exact canonical source_id"),
+    source_type:str|None=Query(default=None,min_length=1,description="Exact source_type"),
+    query:str|None=Query(default=None,min_length=1,description="Case-insensitive substring over title, citation and url"),
+    limit:int=Query(default=20,ge=1,le=100),
+    offset:int=Query(default=0,ge=0),
+):
+    total,results=store.list_sources(source_id,source_type,query,limit,offset)
+    return SourceListResponse(count=total,limit=limit,offset=offset,results=results)
+
+@router.get("/sources/{source_id}", response_model=SourceRecord)
+def get_source(source_id:str):
+    try: return store.get_source(source_id)
+    except PersistentWorkflowError as e: raise HTTPException(404,detail=str(e)) from e
+
+@router.get("/sources/{source_id}/entities", response_model=SourceEntitiesResponse)
+def source_entities(source_id:str):
+    try: results=store.get_source_entities(source_id)
+    except PersistentWorkflowError as e: raise HTTPException(404,detail=str(e)) from e
+    return SourceEntitiesResponse(source_id=source_id,count=len(results),results=results)
 
 @router.get("/governance")
 def governance():

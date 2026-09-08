@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import select, func
+from sqlalchemy import or_, select, func
 from sqlalchemy.exc import IntegrityError
 from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship
 from app.db.session import get_session_factory
-from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict
+from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict, SourceRecord, SourceEntityRef
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
 
 # Snapshot keys promoted to dedicated ClinicalEntityDetail fields; everything
@@ -140,6 +140,53 @@ class PersistentClinicalStore:
                 updated_at=e.updated_at,
             )
 
+    def list_sources(self, source_id=None, source_type=None, query=None, limit=20, offset=0):
+        """Page of canonical Sources. Returns (total_matching, [SourceRecord]).
+
+        Pure read of source_registry. `total_matching` counts every row passing
+        the filters, before limit/offset, so callers can page.
+        """
+        with self.Session() as s:
+            stmt=select(SourceRegistry)
+            if source_id is not None: stmt=stmt.where(SourceRegistry.source_id==source_id)
+            if source_type is not None: stmt=stmt.where(SourceRegistry.source_type==source_type)
+            text=(query or "").strip()
+            if text:
+                like=f"%{self._escape_like(text)}%"
+                stmt=stmt.where(or_(
+                    SourceRegistry.title.ilike(like,escape="\\"),
+                    SourceRegistry.citation.ilike(like,escape="\\"),
+                    SourceRegistry.url.ilike(like,escape="\\"),
+                ))
+            total=s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+            rows=s.scalars(stmt.order_by(SourceRegistry.source_id).limit(limit).offset(offset)).all()
+            return total,[self._source_record(r) for r in rows]
+
+    def get_source(self, source_id) -> SourceRecord:
+        """One canonical Source, resolved by exact source_id."""
+        with self.Session() as s:
+            return self._source_record(self._get_source(s,source_id))
+
+    def get_source_entities(self, source_id) -> list[SourceEntityRef]:
+        """Clinical entities currently citing this Source through entity_source.
+
+        Persisted references only: clinical_relationship.source_id and
+        safety_rule.source_id are intentionally excluded.
+        """
+        with self.Session() as s:
+            self._get_source(s,source_id)
+            rows=s.scalars(select(ClinicalEntity).join(EntitySource,EntitySource.entity_id==ClinicalEntity.id)
+                           .where(EntitySource.source_id==source_id)
+                           .order_by(ClinicalEntity.entity_type,ClinicalEntity.id)).all()
+            return [SourceEntityRef(
+                entity_id=e.id,
+                entity_type=e.entity_type,
+                name=e.name,
+                current_version=e.current_version,
+                review_status=ReviewStatus(e.review_status),
+                clinical_ranking_eligible=e.review_status=="REVIEWED" and self._source_count(s,e.id)>0,
+            ) for e in rows]
+
     def get_history(self, entity_type, entity_id):
         with self.Session() as s:
             self._get_entity(s,entity_type,entity_id)
@@ -223,6 +270,20 @@ class PersistentClinicalStore:
                 snap=self._latest_snapshot(s,e.id); inds=snap.get('indications',[]); matched=[x for x in inds if x in normalized or x in (text_input or '')]
                 if matched: scored.append((len(matched),e.id,snap,matched))
         scored.sort(key=lambda x:(-x[0],x[1])); return [{"formula_id":eid,"name":snap.get('name',''),"confidence":min(.85,.40+.10*score),"rationale":f"Reviewed corpus indication overlap: {', '.join(matched)}","ingredients":snap.get('ingredients',[]),"safety_flags":list(dict.fromkeys([*snap.get('contraindications',[]),*snap.get('interaction_flags',[]),"PRACTITIONER_REVIEW_REQUIRED"]))} for score,eid,snap,matched in scored[:3]]
+
+    @staticmethod
+    def _escape_like(text):
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _source_record(r) -> SourceRecord:
+        return SourceRecord(source_id=r.source_id,title=r.title,citation=r.citation,url=r.url,source_type=r.source_type,created_at=r.created_at)
+
+    @staticmethod
+    def _get_source(s,source_id):
+        row=s.get(SourceRegistry,source_id)
+        if row is None: raise PersistentWorkflowError("Clinical source not found")
+        return row
 
     @staticmethod
     def _canonical(value):

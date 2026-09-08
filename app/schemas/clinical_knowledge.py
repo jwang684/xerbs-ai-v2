@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from typing import Literal
 
@@ -40,6 +41,60 @@ class SourceConflictDetail(BaseModel):
     source_id: str
     message: str
     conflicting_fields: list[SourceFieldConflict] = Field(default_factory=list)
+
+
+class SourceRecord(BaseModel):
+    """One canonical source_registry row, returned verbatim.
+
+    Exposes only fields the registry actually persists; nothing bibliographic
+    is synthesised.
+    """
+
+    source_id: str
+    title: str
+    citation: str | None = None
+    url: str | None = None
+    source_type: str
+    created_at: datetime
+
+
+class SourceListResponse(BaseModel):
+    """A page of canonical Sources.
+
+    `count` is the total number of Sources matching the filters, before
+    limit/offset are applied, so a caller can page through it.
+    """
+
+    count: int = 0
+    limit: int = 0
+    offset: int = 0
+    results: list[SourceRecord] = Field(default_factory=list)
+
+
+class SourceEntityRef(BaseModel):
+    """A clinical entity that currently cites a canonical Source.
+
+    Identity fields only, read from the live clinical_entity row.
+    """
+
+    entity_id: str
+    entity_type: str
+    name: str
+    current_version: int
+    review_status: ReviewStatus
+    clinical_ranking_eligible: bool
+
+
+class SourceEntitiesResponse(BaseModel):
+    """Entities citing one Source through entity_source.
+
+    Reverse lookup over entity_source only. clinical_relationship.source_id and
+    safety_rule.source_id are deliberately NOT mixed in here.
+    """
+
+    source_id: str
+    count: int = 0
+    results: list[SourceEntityRef] = Field(default_factory=list)
 
 
 class PatternRecord(BaseModel):
