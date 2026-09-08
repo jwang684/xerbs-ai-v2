@@ -42,13 +42,20 @@ class SourceRegistry(Base):
     citation: Mapped[str | None] = mapped_column(Text, nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_type: Mapped[str] = mapped_column(String(80), nullable=False, default="UNSPECIFIED")
+    review_status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT", index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=True)
 
 
 class EntitySource(Base):
     __tablename__ = "entity_source"
     entity_id: Mapped[str] = mapped_column(String(64), ForeignKey("clinical_entity.id", ondelete="CASCADE"), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), ForeignKey("source_registry.source_id", ondelete="RESTRICT"), primary_key=True)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    locator: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class IngestionBatch(Base):
@@ -73,6 +80,26 @@ class ReviewEvent(Base):
     event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     entity_id: Mapped[str] = mapped_column(String(64), ForeignKey("clinical_entity.id", ondelete="RESTRICT"), nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    from_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class SourceReviewEvent(Base):
+    """Append-only governance trail for canonical Sources.
+
+    Mirrors ReviewEvent, but keyed to source_registry so the existing
+    review_event -> clinical_entity foreign key stays intact.
+    """
+
+    __tablename__ = "source_review_event"
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(128), ForeignKey("source_registry.source_id", ondelete="RESTRICT"), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(80), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
     actor_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
