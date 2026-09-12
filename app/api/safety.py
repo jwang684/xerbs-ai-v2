@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from app.core.governance_guard import require_governance_mutation_enabled
 from app.schemas.safety import SafetyScreenRequest, RelationshipCreateRequest, SafetyRuleCreateRequest, RelationshipDirection, RelationshipQueryResponse, RelationshipType, SafetyRuleQueryResponse, SafetyRuleType
 from app.services.safety.engine import SafetyEngine
 router=APIRouter(prefix='/api/v1/safety',tags=['clinical-safety'])
@@ -7,7 +8,7 @@ engine=SafetyEngine()
 @router.post('/screen')
 def screen(req:SafetyScreenRequest): return engine.screen(req)
 
-@router.post('/relationships')
+@router.post('/relationships', dependencies=[Depends(require_governance_mutation_enabled)])
 def relationship(req:RelationshipCreateRequest):
     try: return engine.create_relationship(req)
     except ValueError as e: raise HTTPException(422,detail=str(e)) from e
@@ -21,7 +22,7 @@ def list_relationships(
     results=engine.list_relationships(entity_id,relationship_type,direction)
     return RelationshipQueryResponse(entity_id=entity_id,direction=direction,relationship_type=relationship_type,count=len(results),results=results)
 
-@router.post('/rules')
+@router.post('/rules', dependencies=[Depends(require_governance_mutation_enabled)])
 def rule(req:SafetyRuleCreateRequest):
     try: return engine.create_rule(req)
     except ValueError as e: raise HTTPException(422,detail=str(e)) from e
