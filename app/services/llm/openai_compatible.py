@@ -1,8 +1,38 @@
 import json
+import logging
 
 import httpx
 
 from app.services.llm.provider import LLMProvider, ProviderResult
+
+logger = logging.getLogger(__name__)
+
+
+# Upstream error bodies do not leave this module.
+#
+# Every failure here used to be re-raised as RuntimeError carrying the provider's
+# raw response text. Base44GenerationService stores that string on the generation
+# row (error_message) and returns it to xerbs-core, so an upstream body would be
+# persisted in the database and shipped across a service boundary.
+#
+# That matters as soon as a real key exists: an OpenAI 401 body echoes a partial
+# key back ("Incorrect API key provided: sk-...") along with account hints. While
+# LLM_PROVIDER=mock there is no key and nothing to leak, which is exactly why
+# this is fixed before the switch rather than after.
+#
+# The status code and failure class are kept -- they are what an operator needs
+# and neither is sensitive. The body is logged, not returned.
+class ProviderCallError(RuntimeError):
+    """A provider call failed. The message is safe to persist and return."""
+
+
+def _redact(text: str, *secrets: str) -> str:
+    """Defence in depth for anything that does get logged."""
+    out = str(text)
+    for secret in secrets:
+        if secret and len(secret) >= 8:
+            out = out.replace(secret, "***REDACTED***")
+    return out
 
 
 SYSTEM_PROMPT = """You are a TCM clinical decision-support engine for licensed practitioner review.
@@ -121,53 +151,57 @@ class OpenAICompatibleProvider(LLMProvider):
                     json=payload,
                 )
             except httpx.RequestError as exc:
-                raise RuntimeError(
-                    f"OpenAI-compatible provider request failed: {exc}"
+                # str(exc) can carry the full request URL; log it, do not return it.
+                logger.error(
+                    "LLM transport failure (%s): %s",
+                    type(exc).__name__,
+                    _redact(str(exc), self.api_key),
+                )
+                raise ProviderCallError(
+                    "LLM provider unreachable "
+                    f"({type(exc).__name__})."
                 ) from exc
 
         if response.is_error:
-            error_text = response.text
-
-            try:
-                error_json = response.json()
-                error_text = json.dumps(
-                    error_json,
-                    ensure_ascii=False,
-                )
-            except Exception:
-                pass
-
-            raise RuntimeError(
-                f"OpenAI API error {response.status_code}: {error_text}"
+            # A 401 body echoes part of the key back. Log it redacted; the
+            # caller gets the status code, which is the actionable part.
+            logger.error(
+                "LLM provider returned %s: %s",
+                response.status_code,
+                _redact(response.text, self.api_key)[:2000],
+            )
+            raise ProviderCallError(
+                f"LLM provider returned HTTP {response.status_code}."
             )
 
         try:
             response_data = response.json()
         except Exception as exc:
-            raise RuntimeError(
-                f"OpenAI API returned invalid JSON: {response.text}"
+            logger.error("LLM provider returned a non-JSON body")
+            raise ProviderCallError(
+                "LLM provider returned a response that was not JSON."
             ) from exc
 
         try:
             raw = response_data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError(
-                "OpenAI API response did not contain "
-                "choices[0].message.content. "
-                f"Response: {json.dumps(response_data, ensure_ascii=False)}"
+            logger.error("LLM response lacked choices[0].message.content")
+            raise ProviderCallError(
+                "LLM provider response did not contain a message."
             ) from exc
 
         if not raw:
-            raise RuntimeError(
-                "OpenAI API returned an empty message content."
+            raise ProviderCallError(
+                "LLM provider returned empty message content."
             )
 
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "OpenAI model returned content that was not valid JSON. "
-                f"Raw content: {raw}"
+            # raw is model output derived from patient text; log, do not return.
+            logger.error("LLM returned non-JSON content: %s", str(raw)[:2000])
+            raise ProviderCallError(
+                "LLM provider returned content that was not valid JSON."
             ) from exc
 
         pattern_hypotheses = data.get("pattern_hypotheses", [])

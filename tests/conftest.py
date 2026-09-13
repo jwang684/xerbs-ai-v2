@@ -43,3 +43,14 @@ os.environ.setdefault("LLM_PROVIDER", "mock")
 os.environ["SERVICE_AUTH_TOKEN"] = ""
 os.environ["ALLOW_INSECURE_LOCAL"] = "true"
 os.environ["ALLOW_EXTERNAL_GOVERNANCE_MUTATION"] = "true"
+
+# X1D-PIPE1: the mock provider is now permitted only where a non-clinical
+# answer is the expected outcome. State that this is such a place, for the same
+# reason the values above are stated rather than inherited: a local .env with
+# ENVIRONMENT=staging would otherwise turn every mock-backed test into a
+# configuration error, which says nothing about whether those tests still
+# describe correct behaviour.
+#
+# The guard itself is covered by tests/test_x1d_pipe1_provider_policy.py, which
+# sets the environment explicitly per case and never relies on this default.
+os.environ["ENVIRONMENT"] = "test"
