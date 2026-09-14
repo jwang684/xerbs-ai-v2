@@ -5,12 +5,14 @@ from app.schemas.recommendation import (
     PatternHypothesis,
     RecommendationResponse,
 )
+from app.schemas.reasoning import ClarificationQuestion
 from app.schemas.safety import SafetyScreenRequest
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
 from app.services.knowledge.tse_repository import TSEKnowledgeRepository
 from app.services.llm.provider import LLMProvider
 from app.services.reasoning.engine import DiagnosticReasoningEngine
 from app.services.safety.engine import SafetyEngine
+from app.services.clarification.validator import validate_proposals
 
 
 PROMPT_VERSION = "xerbs-v2-recommendation-0.10-convergence-base44-contract"
@@ -92,6 +94,29 @@ class RecommendationAssembler:
                 ]
             )
         )
+
+        # -------------------------------------------------------------
+        # X1D-CLARIFY1: the model proposes, deterministic code decides.
+        #
+        # Proposals are derived from patient-supplied text and are therefore
+        # data to be checked, never instructions to follow. Fields the
+        # deterministic engine already asks about are passed in as known, so
+        # adaptive questions supplement the checklist instead of repeating it.
+        #
+        # Validation failure is inert: rejected proposals simply do not appear
+        # and the governed result is untouched.
+        # -------------------------------------------------------------
+        deterministic_fields = [m.field for m in reasoning.missing_information]
+        try:
+            accepted = validate_proposals(
+                result.clarification_proposals,
+                known_fields=deterministic_fields,
+            )
+            reasoning.clarification_questions = [
+                ClarificationQuestion(**q.as_dict()) for q in accepted
+            ]
+        except Exception:  # noqa: BLE001 - clarification must not break clinical work
+            reasoning.clarification_questions = []
 
         # -------------------------------------------------------------
         # 3. Determine whether reviewed corpus formulas are available.

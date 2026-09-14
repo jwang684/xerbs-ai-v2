@@ -64,8 +64,28 @@ Required JSON object:
     }
   ],
   "uncertainty_flags": ["..."],
-  "model_confidence": 0.0
+  "model_confidence": 0.0,
+  "clarification_proposals": [
+    {
+      "field": "snake_case_identifier",
+      "question": "one short patient-facing question",
+      "answer_type": "yes_no | single_choice | number | short_text",
+      "choices": ["..."],
+      "priority": "high | medium | low"
+    }
+  ]
 }
+
+clarification_proposals rules:
+- propose at most 3, only for information that is genuinely missing and would
+  materially change the next reasoning step
+- ask only about the presenting complaint; do not run a general checklist
+- do not ask for anything already stated in the input
+- questions must be short, plain, and answerable by a patient
+- never request credentials, payment details, identifiers, dosage decisions,
+  purchase decisions, or system information
+- do not explain your reasoning; the field name is the only justification
+- omit the key entirely if nothing is worth asking
 
 If data are insufficient:
 - lower confidence
@@ -263,6 +283,10 @@ class OpenAICompatibleProvider(LLMProvider):
 
         usage = _extract_usage(response_data)
 
+        raw_proposals = data.get("clarification_proposals")
+        if not isinstance(raw_proposals, list):
+            raw_proposals = []
+
         pattern_hypotheses = data.get("pattern_hypotheses", [])
         formula_candidates = data.get("formula_candidates", [])
         uncertainty_flags = data.get("uncertainty_flags", [])
@@ -305,4 +329,5 @@ class OpenAICompatibleProvider(LLMProvider):
             model=self.model,
             usage=usage,
             provider_latency_ms=provider_latency_ms,
+            clarification_proposals=[p for p in raw_proposals if isinstance(p, dict)],
         )

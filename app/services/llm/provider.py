@@ -43,6 +43,11 @@ class ProviderResult:
     # test valid without change.
     usage: ProviderUsage | None = None
     provider_latency_ms: float | None = None
+    # X1D-CLARIFY1: raw, unvalidated clarification proposals. They are model
+    # output derived from patient text, so they are data to be checked, never
+    # instructions to follow. Nothing renders these directly -- the
+    # deterministic validator decides what a patient sees.
+    clarification_proposals: list[dict] = field(default_factory=list)
 
 
 class LLMProvider(ABC):

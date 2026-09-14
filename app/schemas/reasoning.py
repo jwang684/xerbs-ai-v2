@@ -32,6 +32,23 @@ class ConvergenceMetrics(BaseModel):
     contradiction_count: int = Field(ge=0, default=0)
     rationale: list[str] = Field(default_factory=list)
 
+class ClarificationQuestion(BaseModel):
+    """A model-proposed question that passed deterministic validation.
+
+    Carried separately from followup_questions, which are the deterministic
+    engine's own and take precedence. No rationale prose is carried: the field
+    identifier is the whole justification, and reasoning text would be
+    chain-of-thought by another name.
+    """
+
+    field: str
+    question: str
+    answer_type: str = "short_text"
+    priority: str = "medium"
+    choices: list[str] = Field(default_factory=list)
+    source: str = "xerbs-ai-v2-adaptive"
+
+
 class ReasoningResponse(BaseModel):
     request_id: str | None = None
     structured_symptoms: list[StructuredSymptom] = Field(default_factory=list)
@@ -41,3 +58,6 @@ class ReasoningResponse(BaseModel):
     uncertainty_flags: list[str] = Field(default_factory=list)
     ready_for_formula_retrieval: bool = False
     convergence: ConvergenceMetrics | None = None
+    # X1D-CLARIFY1: validated adaptive questions. Optional and defaulted, so
+    # every existing caller and stored snapshot stays valid.
+    clarification_questions: list[ClarificationQuestion] = Field(default_factory=list)
