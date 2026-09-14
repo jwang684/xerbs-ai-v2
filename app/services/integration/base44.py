@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, json
+import hashlib, json, time
 from datetime import datetime, timezone
 from uuid import uuid4
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from app.db.session import get_session_factory
 from app.schemas.integration import Base44GenerateRequest, Base44GenerationResponse
 from app.services.recommendation.assembler import RecommendationAssembler
 from app.services.llm.provider import LLMProvider
+from app.services.telemetry.provider_usage import record_provider_usage
 
 class IdempotencyConflictError(ValueError): pass
 class GenerationNotFoundError(ValueError): pass
@@ -51,14 +52,30 @@ class Base44GenerationService:
             row=s.get(GenerationRequest,generation_id)
             if row is None: raise GenerationNotFoundError("Generation not found")
             req=Base44GenerateRequest(**row.request_snapshot)
+            row_correlation_id=row.correlation_id
         try:
             intake=req.intake.model_copy(update={"request_id": req.request_id})
-            recommendation=await RecommendationAssembler(self.provider).generate(intake)
+            # X1D-TELEMETRY1: capture the raw provider result for accounting.
+            # It is recorded after the clinical result is safely persisted, so
+            # a telemetry failure can never cost a valid diagnosis.
+            captured={}
+            started=time.monotonic()
+            recommendation=await RecommendationAssembler(self.provider).generate(
+                intake, on_provider_result=lambda r: captured.__setitem__("result", r))
+            generation_latency_ms=(time.monotonic()-started)*1000.0
             with self.Session.begin() as s:
                 row=s.get(GenerationRequest,generation_id)
                 row.status="SUCCEEDED"; row.response_snapshot=recommendation.model_dump(mode="json")
                 row.error_code=None; row.error_message=None; row.updated_at=datetime.now(timezone.utc)
-                return self._response(row)
+                response=self._response(row)
+            if "result" in captured:
+                record_provider_usage(
+                    generation_id=generation_id,
+                    correlation_id=row_correlation_id,
+                    result=captured["result"],
+                    generation_latency_ms=generation_latency_ms,
+                )
+            return response
         except Exception as exc:
             with self.Session.begin() as s:
                 row=s.get(GenerationRequest,generation_id)

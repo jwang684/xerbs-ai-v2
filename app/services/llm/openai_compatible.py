@@ -1,9 +1,14 @@
 import json
 import logging
+import time
 
 import httpx
 
-from app.services.llm.provider import LLMProvider, ProviderResult
+from app.services.llm.provider import (
+    LLMProvider,
+    ProviderResult,
+    ProviderUsage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,48 @@ If data are insufficient:
 - do not claim that a pattern or formula is clinically verified
 - do not output a final prescription
 """
+
+
+def _coerce_int(value) -> int | None:
+    """Accept only a clean non-negative integer; anything else is unknown."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _extract_usage(response_data: dict) -> ProviderUsage | None:
+    """Read the provider's own token accounting, or return None.
+
+    Nothing is inferred. If the provider did not report a count, the count
+    stays None -- estimating tokens from text length would produce a number
+    indistinguishable from a measurement, and it would be wrong.
+
+    The *_details objects are newer and model-dependent, so their absence is
+    normal and must not be an error.
+    """
+    usage = response_data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    prompt_details = usage.get("prompt_tokens_details")
+    completion_details = usage.get("completion_tokens_details")
+
+    result = ProviderUsage(
+        prompt_tokens=_coerce_int(usage.get("prompt_tokens")),
+        completion_tokens=_coerce_int(usage.get("completion_tokens")),
+        total_tokens=_coerce_int(usage.get("total_tokens")),
+        cached_input_tokens=_coerce_int(
+            prompt_details.get("cached_tokens")
+            if isinstance(prompt_details, dict) else None),
+        reasoning_tokens=_coerce_int(
+            completion_details.get("reasoning_tokens")
+            if isinstance(completion_details, dict) else None),
+    )
+    return None if result.is_empty() else result
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -143,6 +190,14 @@ class OpenAICompatibleProvider(LLMProvider):
 
         url = f"{self.base_url}/chat/completions"
 
+        # X1D-TELEMETRY1: time the external call only, on a monotonic clock.
+        #
+        # Monotonic because wall-clock time can step backwards (NTP), which
+        # would produce negative or absurd durations in the cost record. The
+        # span covers the provider HTTP call alone -- not corpus resolution,
+        # safety or persistence -- so provider_latency_ms stays comparable
+        # across deployments and is never confused with end-to-end time.
+        started = time.monotonic()
         async with httpx.AsyncClient(timeout=90.0) as client:
             try:
                 response = await client.post(
@@ -161,6 +216,8 @@ class OpenAICompatibleProvider(LLMProvider):
                     "LLM provider unreachable "
                     f"({type(exc).__name__})."
                 ) from exc
+
+        provider_latency_ms = (time.monotonic() - started) * 1000.0
 
         if response.is_error:
             # A 401 body echoes part of the key back. Log it redacted; the
@@ -204,6 +261,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 "LLM provider returned content that was not valid JSON."
             ) from exc
 
+        usage = _extract_usage(response_data)
+
         pattern_hypotheses = data.get("pattern_hypotheses", [])
         formula_candidates = data.get("formula_candidates", [])
         uncertainty_flags = data.get("uncertainty_flags", [])
@@ -244,4 +303,6 @@ class OpenAICompatibleProvider(LLMProvider):
             model_confidence=model_confidence,
             provider="openai-compatible",
             model=self.model,
+            usage=usage,
+            provider_latency_ms=provider_latency_ms,
         )

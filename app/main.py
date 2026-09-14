@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import Depends, FastAPI
 from app.api.health import router as health_router
 from app.api.recommendations import router as recommendation_router
@@ -14,6 +16,20 @@ from app.db.session import init_db
 from app.services.knowledge.persistent_seed import seed_legacy_formula_fixtures
 
 settings=get_settings()
+
+# X1D-TELEMETRY1: give application loggers a handler.
+#
+# uvicorn configures only its own loggers, never the root, so anything this
+# application logged below WARNING was silently dropped -- including the
+# per-call token/latency/cost record. The rows were being written to
+# audit_event correctly; there was simply no way to see them, and
+# DATABASE_URL is private, so "no log line" was indistinguishable from
+# "no telemetry". basicConfig is a no-op if a handler is already installed.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
 init_db(); seed_legacy_formula_fixtures()
 app=FastAPI(title=settings.app_name,version=settings.app_version)
 

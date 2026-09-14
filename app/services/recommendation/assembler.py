@@ -45,7 +45,17 @@ class RecommendationAssembler:
     async def generate(
         self,
         request: RecommendationRequest,
+        on_provider_result=None,
     ) -> RecommendationResponse:
+        """on_provider_result is an X1D-TELEMETRY1 observer.
+
+        The raw ProviderResult carries token counts and call latency that the
+        clinical response deliberately does not, so persistence needs a way to
+        see it without those numbers entering the contract. An optional
+        callback keeps every existing caller working unchanged and keeps the
+        assembler's clinical behaviour identical: it is invoked for its side
+        effect and its return value is ignored.
+        """
         # -------------------------------------------------------------
         # 1. Generate model hypotheses.
         #
@@ -60,6 +70,10 @@ class RecommendationAssembler:
             image_data=request.image_data,
             language=request.language,
         )
+
+        if on_provider_result is not None:
+            # Observational only; never allowed to affect what follows.
+            on_provider_result(result)
 
         # -------------------------------------------------------------
         # 2. Run deterministic diagnostic reasoning against the
