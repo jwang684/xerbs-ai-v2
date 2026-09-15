@@ -217,7 +217,11 @@ class TestTelemetryIsSafe:
             "prompt_tokens", "completion_tokens", "total_tokens",
             "cached_input_tokens", "reasoning_tokens", "provider_latency_ms",
             "generation_latency_ms", "estimated_cost_usd", "pricing_version",
-            "pricing_source", "occurred_at"}
+            "pricing_source", "occurred_at",
+            # X1D-LEGACYDIAG3.2: which contract produced the call. The set
+            # stays closed and exhaustively asserted; this names the one
+            # addition rather than loosening the check.
+            "inference_purpose"}
 
     def test_a_storage_failure_is_swallowed(self, monkeypatch):
         """A valid governed diagnosis must not fail because accounting did."""

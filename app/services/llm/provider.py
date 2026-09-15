@@ -53,12 +53,37 @@ class ProviderResult:
     # proposed several things of the wrong shape" are the same observation,
     # and they call for opposite fixes.
     clarification_proposals_discarded: int = 0
+    # X1D-LEGACYDIAG3.2: which kind of call produced this result. Operational
+    # only -- it never reaches the clinical contract, and nothing downstream
+    # branches on it except telemetry.
+    inference_purpose: str = "FULL_REASONING"
+    # X1D-LEGACYDIAG3.2: raw interview block, typed later by the assembler so a
+    # validation failure is contained there rather than at the provider. Empty
+    # on a full-reasoning call.
+    interview: dict = field(default_factory=dict)
     # X1D-LEGACYDIAG2: raw reasoning block, typed later by the assembler so a
     # validation failure is contained there rather than at the provider.
     clinical_reasoning: dict = field(default_factory=dict)
 
 
+INTERVIEW = "INTERVIEW"
+FULL_REASONING = "FULL_REASONING"
+
+
 class LLMProvider(ABC):
     @abstractmethod
     async def generate_recommendation(self, *, text_input: str, symptoms: list[str], goals: list[str], constraints: list[str], image_data: str | None, language: str) -> ProviderResult:
+        raise NotImplementedError
+
+    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str) -> ProviderResult:
+        """The small call: what should we ask next, and why.
+
+        Concrete rather than abstract so an existing provider keeps working
+        without change; one that has not implemented it simply cannot be
+        routed to interview mode, which the assembler checks before routing.
+
+        The result must never carry formula candidates or a reasoning
+        envelope. That is asserted structurally in the tests rather than left
+        to each implementation's good behaviour.
+        """
         raise NotImplementedError

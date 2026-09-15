@@ -92,6 +92,11 @@ def build_usage_payload(
         "correlation_id": correlation_id,
         "provider": result.provider,
         "model": result.model,
+        # X1D-LEGACYDIAG3.2: which contract produced this call. Operational
+        # only -- it is what makes an interview turn and a full-reasoning turn
+        # separable in the cost and latency record, and it carries no clinical
+        # meaning.
+        "inference_purpose": getattr(result, "inference_purpose", "FULL_REASONING"),
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": total,

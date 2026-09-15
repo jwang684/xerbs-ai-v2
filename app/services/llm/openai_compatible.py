@@ -5,6 +5,8 @@ import time
 import httpx
 
 from app.services.llm.provider import (
+    FULL_REASONING,
+    INTERVIEW,
     LLMProvider,
     ProviderResult,
     ProviderUsage,
@@ -149,6 +151,79 @@ If data are insufficient:
 """
 
 
+# X1D-LEGACYDIAG3.2: the interview prompt.
+#
+# The full contract above asks for everything a practitioner would eventually
+# want. Mid-interview the patient needs the next one to three questions, and
+# measured on staging the full call spends ~2000-2600 completion tokens to
+# deliver about a hundred of them.
+#
+# So this prompt asks for the smallest thing that still lets deterministic
+# ranking choose well: a couple of working readings with the findings for and
+# against each, what is missing, and at most three questions. No diagnosis, no
+# formula, no dosage, no treatment plan -- not as a filter applied afterwards
+# but as something the contract never asks for.
+#
+# The instruction that matters most is the discrimination one. A question that
+# cannot change which reading is leading is not worth a patient's time, and
+# that is the difference between an interview and an intake form.
+INTERVIEW_SYSTEM_PROMPT = """You are conducting a TCM clinical interview. Your only job this turn is to decide what to ask next. Return JSON only.
+
+Required JSON object:
+{
+  "interview_summary": "one short sentence on what the picture looks like so far",
+  "working_hypotheses": [
+    {
+      "name": "...",
+      "confidence": 0.0,
+      "supporting_findings": ["findings already reported that fit"],
+      "contradicting_findings": ["findings already reported that do not fit"]
+    }
+  ],
+  "missing_information": ["what you most need to know, in short phrases"],
+  "information_sufficient": false,
+  "clarification_proposals": [
+    {
+      "field": "snake_case_identifier",
+      "question": "one short patient-facing question",
+      "answer_type": "yes_no | single_choice | number | short_text",
+      "choices": ["..."],
+      "priority": "high | medium | low"
+    }
+  ]
+}
+
+How to choose the questions:
+- give at most 3, and fewer when fewer would do. Two good questions beat four
+- ask what would most change which of your working_hypotheses is leading. A
+  question whose answer cannot move the ranking is not worth asking
+- ask only about this complaint. Do not run a general intake checklist
+- never ask about anything the input already states. Read the input carefully
+  first: information supplied by the patient is already known
+- do not invent findings. If something was not reported, it is unknown, not absent
+- questions must be short, plain, and answerable by a patient
+
+working_hypotheses rules:
+- two or three at most. They are provisional readings used to pick the next
+  question, not a diagnosis
+- cite findings actually present in the input, for and against each
+- if the input supports only one reading, say so and give one
+
+What this turn must NOT contain:
+- no formula, no herb, no dosage, no administration, no treatment plan
+- no final syndrome diagnosis and no claim that anything is verified
+- no advice, no reassurance, no safety clearance
+
+"field" must be an ASCII snake_case English identifier of 3-40 characters,
+lower-case letters, digits and underscores only, for example sputum_colour or
+aversion_to_cold. Never Chinese characters, never spaces or punctuation. Only
+the identifier is English; the question text stays in the patient's language.
+
+Set information_sufficient true only when another question would add nothing
+material. It is advisory: deterministic governance decides what happens next.
+"""
+
+
 def _coerce_int(value) -> int | None:
     """Accept only a clean non-negative integer; anything else is unknown."""
     if value is None or isinstance(value, bool):
@@ -209,6 +284,126 @@ class OpenAICompatibleProvider(LLMProvider):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key.strip()
         self.model = model.strip()
+
+    async def generate_interview(
+        self,
+        *,
+        text_input: str,
+        symptoms: list[str],
+        language: str,
+    ) -> ProviderResult:
+        """The small call. Same transport, different contract.
+
+        Returns a ProviderResult so every existing mechanism -- usage
+        accounting, latency, clarification proposals, the CLARIFY3 rejection
+        record -- keeps working without a second pipeline. What differs is what
+        is absent: formula_candidates and clinical_reasoning are empty here by
+        construction, not by filtering.
+        """
+        content = json.dumps(
+            {"text_input": text_input, "symptoms": symptoms,
+             "language": language},
+            ensure_ascii=False,
+        )
+        data, usage, provider_latency_ms = await self._call(
+            INTERVIEW_SYSTEM_PROMPT, content)
+
+        raw_proposals = data.get("clarification_proposals")
+        if not isinstance(raw_proposals, list):
+            raw_proposals = []
+        well_formed = [p for p in raw_proposals if isinstance(p, dict)]
+
+        interview = {
+            key: data.get(key)
+            for key in ("interview_summary", "working_hypotheses",
+                        "missing_information", "information_sufficient")
+            if data.get(key) is not None
+        }
+
+        return ProviderResult(
+            summary=str(data.get("interview_summary") or ""),
+            # Deliberately empty. An interview turn proposes no pattern to the
+            # corpus and no formula to anyone.
+            pattern_hypotheses=[],
+            formula_candidates=[],
+            uncertainty_flags=[],
+            model_confidence=0.0,
+            provider="openai-compatible",
+            model=self.model,
+            usage=usage,
+            provider_latency_ms=provider_latency_ms,
+            clarification_proposals=well_formed,
+            clarification_proposals_discarded=len(raw_proposals) - len(well_formed),
+            inference_purpose=INTERVIEW,
+            interview=interview,
+        )
+
+    async def _call(self, system_prompt: str, content):
+        """One provider round trip. Shared so both contracts use the same
+        transport, the same error handling and the same redaction."""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{self.base_url}/chat/completions"
+
+        started = time.monotonic()
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+            except httpx.RequestError as exc:
+                logger.error("LLM transport failure (%s): %s",
+                             type(exc).__name__,
+                             _redact(str(exc), self.api_key))
+                raise ProviderCallError(
+                    f"LLM provider unreachable ({type(exc).__name__})."
+                ) from exc
+        provider_latency_ms = (time.monotonic() - started) * 1000.0
+
+        if response.is_error:
+            logger.error("LLM provider returned %s: %s", response.status_code,
+                         _redact(response.text, self.api_key)[:2000])
+            raise ProviderCallError(
+                f"LLM provider returned HTTP {response.status_code}.")
+
+        try:
+            response_data = response.json()
+        except Exception as exc:
+            logger.error("LLM provider returned a non-JSON body")
+            raise ProviderCallError(
+                "LLM provider returned a response that was not JSON.") from exc
+
+        try:
+            raw = response_data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            logger.error("LLM response lacked choices[0].message.content")
+            raise ProviderCallError(
+                "LLM provider response did not contain a message.") from exc
+
+        if not raw:
+            raise ProviderCallError("LLM provider returned empty message content.")
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.error("LLM returned non-JSON content: %s", str(raw)[:2000])
+            raise ProviderCallError(
+                "LLM provider returned content that was not valid JSON."
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise ProviderCallError(
+                "LLM provider returned JSON that was not an object.")
+
+        return data, _extract_usage(response_data), provider_latency_ms
 
     async def generate_recommendation(
         self,

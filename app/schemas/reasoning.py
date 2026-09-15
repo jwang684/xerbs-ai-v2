@@ -169,3 +169,64 @@ class ClinicalReasoningEnvelope(BaseModel):
             self.pathogenesis, self.treatment_principle,
             self.formula_hypotheses, self.missing_information,
         ])
+
+
+# ======================================================================
+# X1D-LEGACYDIAG3.2: the interview contract
+# ======================================================================
+#
+# A patient mid-interview needs the next one to three questions. The full
+# contract asks the model for a summary, pattern hypotheses, formula
+# candidates, and the whole ClinicalReasoningEnvelope -- pathogenesis,
+# treatment principle, formula hypotheses with ingredients, dosages,
+# administration and contraindications -- and then shows the patient two short
+# questions. Measured on staging that is ~2000-2600 completion tokens to
+# deliver perhaps a hundred, and completion tokens are ~5.8ms each.
+#
+# So this is a deliberately small contract for the interview turns. It is NOT
+# ClinicalReasoningEnvelope and must never become one: no formula candidates,
+# no dosages, no herb composition, no treatment plan, no final syndrome
+# diagnosis, no safety clearance, no eligibility of any kind. Those fields are
+# absent by construction rather than filtered later, which is what makes the
+# absence testable.
+#
+# working_hypotheses are reasoning aids for choosing the next question. They
+# are not diagnoses, never become REVIEWED knowledge, never create
+# relationships, and are not persisted as governed knowledge.
+
+
+class InterviewHypothesis(BaseModel):
+    """A provisional reading the next question is meant to separate.
+
+    Carries findings for and against so CLARIFY2 ranking can tell which
+    domains actually discriminate -- the same signal the envelope supplies on
+    a full turn.
+    """
+
+    name: str
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    supporting_findings: list[str] = Field(default_factory=list)
+    contradicting_findings: list[str] = Field(default_factory=list)
+
+
+class InterviewReasoning(BaseModel):
+    """What the model returns on an interview turn, and nothing more."""
+
+    interview_summary: str | None = None
+    working_hypotheses: list[InterviewHypothesis] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    # Advisory only. Deterministic governance decides whether a case may
+    # proceed; the model never gets to declare a case finished.
+    information_sufficient: bool = False
+
+    @property
+    def pattern_hypotheses(self) -> list[InterviewHypothesis]:
+        """Duck-typed alias so CLARIFY2 signal extraction reads this
+        unchanged. extract_differential_signals uses getattr for exactly this
+        reason; giving it the shape it already knows avoids a second code path
+        through the ranking logic."""
+        return self.working_hypotheses
+
+    def is_empty(self) -> bool:
+        return not any([self.interview_summary, self.working_hypotheses,
+                        self.missing_information])

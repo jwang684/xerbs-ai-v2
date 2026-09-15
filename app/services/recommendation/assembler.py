@@ -8,6 +8,7 @@ from app.schemas.recommendation import (
 from app.schemas.reasoning import (
     ClarificationQuestion,
     ClinicalReasoningEnvelope,
+    InterviewReasoning,
 )
 from app.schemas.safety import SafetyScreenRequest
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
@@ -16,6 +17,11 @@ from app.services.llm.provider import LLMProvider
 from app.services.reasoning.engine import DiagnosticReasoningEngine
 from app.services.safety.engine import SafetyEngine
 from app.services.clarification.validator import validate_proposals_detailed
+from app.services.interview.mode import (
+    INTERVIEW,
+    decide_mode,
+    provider_supports_interview,
+)
 from app.services.telemetry.clarification_rejection import outcome_flags
 from app.services.clarification.coverage import (
     Candidate,
@@ -76,14 +82,40 @@ class RecommendationAssembler:
         # Model output is hypothesis-level intelligence only.
         # It is not a clinically verified recommendation.
         # -------------------------------------------------------------
-        result = await self.provider.generate_recommendation(
-            text_input=request.text_input,
-            symptoms=request.symptoms,
-            goals=request.goals,
-            constraints=request.constraints,
-            image_data=request.image_data,
-            language=request.language,
+        # -------------------------------------------------------------
+        # X1D-LEGACYDIAG3.2: decide which contract this turn needs, before
+        # calling anything.
+        #
+        # Both inputs are deterministic and available pre-call: the engine's
+        # own marker-matched missing_information, and CLARIFY2 coverage over
+        # the accumulated text. The model is not consulted about whether the
+        # interview should continue -- see interview/mode.py for why.
+        # -------------------------------------------------------------
+        accumulated_text = " ".join([request.text_input or "", *request.symptoms])
+        mode, mode_reason = decide_mode(
+            accumulated_text=accumulated_text,
+            missing_information=self.reasoning.analyze(
+                request, []).missing_information,
+            turn_count=getattr(request, "turn_count", 1),
+            supports_interview=provider_supports_interview(self.provider),
         )
+        interview_mode = mode == INTERVIEW
+
+        if interview_mode:
+            result = await self.provider.generate_interview(
+                text_input=request.text_input,
+                symptoms=request.symptoms,
+                language=request.language,
+            )
+        else:
+            result = await self.provider.generate_recommendation(
+                text_input=request.text_input,
+                symptoms=request.symptoms,
+                goals=request.goals,
+                constraints=request.constraints,
+                image_data=request.image_data,
+                language=request.language,
+            )
 
         if on_provider_result is not None:
             # Observational only; never allowed to affect what follows.
@@ -134,14 +166,33 @@ class RecommendationAssembler:
         # Validation failure is contained: an unusable envelope becomes an
         # empty one, never a failed recommendation.
         # -------------------------------------------------------------
-        try:
-            envelope = ClinicalReasoningEnvelope(**(result.clinical_reasoning or {}))
-        except Exception:  # noqa: BLE001 - reasoning must not break clinical work
-            envelope = ClinicalReasoningEnvelope()
-            uncertainty_flags.append("MODEL_REASONING_ENVELOPE_UNPARSEABLE")
-        reasoning.clinical_reasoning = envelope
+        # X1D-LEGACYDIAG3.2: an interview turn produces no envelope at all.
+        # The small contract never asks for one, so there is nothing to parse
+        # and nothing to attach -- the absence is structural, not filtered.
+        # A compact InterviewReasoning is built instead, used only to give
+        # CLARIFY2 ranking its differential signals; it is never attached to
+        # the response and never persisted as clinical reasoning.
+        signal_source = None
+        if interview_mode:
+            envelope = None
+            try:
+                signal_source = InterviewReasoning(**(result.interview or {}))
+            except Exception:  # noqa: BLE001 - ranking must not break clinical work
+                signal_source = None
+                uncertainty_flags.append("INTERVIEW_REASONING_UNPARSEABLE")
+        else:
+            try:
+                envelope = ClinicalReasoningEnvelope(**(result.clinical_reasoning or {}))
+            except Exception:  # noqa: BLE001 - reasoning must not break clinical work
+                envelope = ClinicalReasoningEnvelope()
+                uncertainty_flags.append("MODEL_REASONING_ENVELOPE_UNPARSEABLE")
+            reasoning.clinical_reasoning = envelope
+            signal_source = envelope
 
-        if envelope.formula_hypotheses:
+        uncertainty_flags.append("INFERENCE_MODE_%s" % mode)
+        uncertainty_flags.append("INFERENCE_ROUTE_%s" % mode_reason)
+
+        if envelope is not None and envelope.formula_hypotheses:
             # Stated explicitly so the distinction is legible in the output
             # itself, not only in the type system.
             uncertainty_flags.append(
@@ -201,7 +252,7 @@ class RecommendationAssembler:
             accumulated_text = " ".join(
                 [request.text_input or "", *request.symptoms])
             coverage = assess_coverage(accumulated_text)
-            signals = extract_differential_signals(envelope)
+            signals = extract_differential_signals(signal_source)
 
             # The reasoning engine appends to missing_information and
             # followup_questions in lockstep, so index i pairs. If that ever
@@ -343,6 +394,19 @@ class RecommendationAssembler:
         # produce a result.
         reviewed_matches = []
 
+        # X1D-LEGACYDIAG3.2 deliberately does NOT gate this on interview mode.
+        #
+        # The first cut skipped retrieval on interview turns, reasoning that
+        # mid-interview nobody should see a formula. Four existing tests caught
+        # it: a REVIEWED, sourced formula reaching the assembler is a corpus
+        # governance guarantee, and suppressing it was scope creep dressed up
+        # as caution.
+        #
+        # The interview path changes which prompt runs. It does not change what
+        # the deterministic corpus does, and it contributes nothing to formula
+        # selection -- generate_interview returns formula_candidates=[] always,
+        # and the interview contract has no formula field to populate. Any
+        # candidate here came from the reviewed corpus, exactly as before.
         if not relationship_matches:
             reviewed_matches = self.corpus.eligible_formula_candidates(
                 request.symptoms,

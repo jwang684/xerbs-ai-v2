@@ -1,4 +1,4 @@
-from .provider import LLMProvider, ProviderResult
+from .provider import INTERVIEW, LLMProvider, ProviderResult
 
 
 class MockProvider(LLMProvider):
@@ -11,4 +11,19 @@ class MockProvider(LLMProvider):
             model_confidence=0.0,
             provider="mock",
             model="mock-v1",
+        )
+
+    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str) -> ProviderResult:
+        """Offline stand-in. Proposes nothing, so the coverage floor supplies
+        the questions -- which is the correct behaviour for a provider that
+        performs no clinical inference."""
+        return ProviderResult(
+            summary="Offline contract-test interview. No clinical inference was performed.",
+            pattern_hypotheses=[],
+            formula_candidates=[],
+            uncertainty_flags=["MOCK_PROVIDER", "PRACTITIONER_REVIEW_REQUIRED"],
+            model_confidence=0.0,
+            provider="mock",
+            model="mock-v1",
+            inference_purpose=INTERVIEW,
         )
