@@ -65,6 +65,36 @@ Required JSON object:
   ],
   "uncertainty_flags": ["..."],
   "model_confidence": 0.0,
+  "clinical_reasoning": {
+    "clinical_summary": "1-2 sentences: the leading pattern and its key pathogenesis",
+    "tcm_diagnosis_hypotheses": ["..."],
+    "eight_principle_differentiation": {
+      "cold_heat": "...", "exterior_interior": "...", "deficiency_excess": "..."
+    },
+    "pattern_hypotheses": [
+      {
+        "name": "...",
+        "role": "primary | secondary",
+        "confidence": 0.0,
+        "supporting_findings": ["2-4 findings from the input that support this"],
+        "contradicting_findings": ["findings that argue against it, if any"]
+      }
+    ],
+    "pathogenesis": "how the pattern arises from the reported findings",
+    "treatment_principle": "the treatment method indicated, stated briefly",
+    "formula_hypotheses": [
+      {
+        "name": "...",
+        "confidence": 0.0,
+        "rationale": "why this formula fits the pattern",
+        "ingredients": [{"name": "...", "dosage": "e.g. 6-9g", "role": "..."}],
+        "administration": "...",
+        "contraindications": ["..."],
+        "precautions": ["..."]
+      }
+    ],
+    "missing_information": ["what would most change this assessment"]
+  },
   "clarification_proposals": [
     {
       "field": "snake_case_identifier",
@@ -75,6 +105,22 @@ Required JSON object:
     }
   ]
 }
+
+clinical_reasoning rules:
+- this block is your clinical reasoning, recorded for practitioner review and
+  for later evidence verification. It is never shown to a patient as a
+  treatment recommendation and never becomes a prescription
+- give a primary pattern and, where the findings genuinely support one, a
+  secondary pattern; cite the specific findings for and against each
+- state pathogenesis and treatment principle plainly, in one or two sentences
+- formula_hypotheses are hypotheses. Name the formula you would consider and
+  why. Ingredients and dosages are the classical composition as you understand
+  it, not an instruction to the patient
+- omit any field you cannot support from the information given. Do not invent
+  a finding, an ingredient, a dosage or a contraindication to fill a slot.
+  An absent field is information; a fabricated one is not
+- put what you would most need to know into missing_information rather than
+  guessing it
 
 clarification_proposals rules:
 - propose at most 3, only for information that is genuinely missing and would
@@ -136,6 +182,19 @@ def _extract_usage(response_data: dict) -> ProviderUsage | None:
             if isinstance(completion_details, dict) else None),
     )
     return None if result.is_empty() else result
+
+
+def _extract_clinical_reasoning(data: dict) -> dict:
+    """Pull the reasoning envelope out of the model response, defensively.
+
+    Returns a plain dict; the typed envelope is built later, where a
+    validation failure can be contained. Richer contracts raise the chance of
+    a malformed section, and a malformed *reasoning* section must never cost
+    an otherwise valid governed result -- the clinical decision does not
+    depend on it.
+    """
+    block = data.get("clinical_reasoning")
+    return block if isinstance(block, dict) else {}
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -283,6 +342,8 @@ class OpenAICompatibleProvider(LLMProvider):
 
         usage = _extract_usage(response_data)
 
+        raw_reasoning = _extract_clinical_reasoning(data)
+
         raw_proposals = data.get("clarification_proposals")
         if not isinstance(raw_proposals, list):
             raw_proposals = []
@@ -330,4 +391,5 @@ class OpenAICompatibleProvider(LLMProvider):
             usage=usage,
             provider_latency_ms=provider_latency_ms,
             clarification_proposals=[p for p in raw_proposals if isinstance(p, dict)],
+            clinical_reasoning=raw_reasoning,
         )

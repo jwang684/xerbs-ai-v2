@@ -48,6 +48,9 @@ class ProviderResult:
     # instructions to follow. Nothing renders these directly -- the
     # deterministic validator decides what a patient sees.
     clarification_proposals: list[dict] = field(default_factory=list)
+    # X1D-LEGACYDIAG2: raw reasoning block, typed later by the assembler so a
+    # validation failure is contained there rather than at the provider.
+    clinical_reasoning: dict = field(default_factory=dict)
 
 
 class LLMProvider(ABC):

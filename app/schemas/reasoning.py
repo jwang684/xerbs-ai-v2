@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 class StructuredSymptom(BaseModel):
@@ -61,3 +63,97 @@ class ReasoningResponse(BaseModel):
     # X1D-CLARIFY1: validated adaptive questions. Optional and defaulted, so
     # every existing caller and stored snapshot stays valid.
     clarification_questions: list[ClarificationQuestion] = Field(default_factory=list)
+    # X1D-LEGACYDIAG2: model reasoning, retained with no authority.
+    clinical_reasoning: "ClinicalReasoningEnvelope | None" = None
+
+
+# ======================================================================
+# X1D-LEGACYDIAG2: the clinical reasoning envelope
+# ======================================================================
+#
+# The legacy system's perceived quality came mostly from what its prompt
+# demanded, not from a better model. Its output contract required a primary
+# and a secondary pattern each with cited evidence, eight-principle
+# differentiation, pathogenesis, treatment principle and formula rationale,
+# down to dosage ranges and decoction method. The current contract asks for
+# five fields, so most of that reasoning was never requested -- and the
+# formula hypotheses that were produced got discarded rather than kept.
+#
+# This envelope asks for the reasoning again and keeps it. What it does not do
+# is give any of it authority. The legacy system's failure was not that it
+# reasoned broadly; it was that free-form prose became, via regex, a
+# purchasable formula with no verification anywhere in between.
+#
+# So every clinical object here carries status=MODEL_HYPOTHESIS and nothing
+# else. These are evidence targets for later verification, not facts. They
+# never enter formula_candidates, never reach SafetyEngine, and never touch
+# purchasability -- those paths are unchanged and untouched by this phase.
+
+MODEL_HYPOTHESIS = "MODEL_HYPOTHESIS"
+
+
+class HypothesisBase(BaseModel):
+    """Marks provenance on every clinical object the model produces.
+
+    Literal rather than a plain string: nothing downstream can widen this to a
+    verified state without changing the type, which makes the escalation
+    visible in review instead of silent.
+    """
+
+    status: Literal["MODEL_HYPOTHESIS"] = MODEL_HYPOTHESIS
+
+
+class PatternHypothesisDetail(HypothesisBase):
+    name: str
+    role: Literal["primary", "secondary"] = "secondary"
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    supporting_findings: list[str] = Field(default_factory=list)
+    contradicting_findings: list[str] = Field(default_factory=list)
+
+
+class IngredientHypothesis(HypothesisBase):
+    name: str
+    # Free text on purpose: the legacy system emitted ranges such as "6-9g",
+    # and parsing that into a number would manufacture a precision the model
+    # never expressed. Nothing computes with this field.
+    dosage: str | None = None
+    role: str | None = None
+
+
+class FormulaHypothesis(HypothesisBase):
+    name: str
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    rationale: str | None = None
+    ingredients: list[IngredientHypothesis] = Field(default_factory=list)
+    administration: str | None = None
+    contraindications: list[str] = Field(default_factory=list)
+    precautions: list[str] = Field(default_factory=list)
+
+
+class ClinicalReasoningEnvelope(BaseModel):
+    """Richer TCM reasoning, retained internally, carrying no authority.
+
+    Every field is optional and defaulted. A model that omits a section
+    produces a valid envelope rather than a parse failure, which is what keeps
+    a richer contract from making the clinical path less reliable -- and what
+    lets the model leave a field out instead of inventing it.
+    """
+
+    clinical_summary: str | None = None
+    tcm_diagnosis_hypotheses: list[str] = Field(default_factory=list)
+    eight_principle_differentiation: dict[str, str] = Field(default_factory=dict)
+    pattern_hypotheses: list[PatternHypothesisDetail] = Field(default_factory=list)
+    pathogenesis: str | None = None
+    treatment_principle: str | None = None
+    formula_hypotheses: list[FormulaHypothesis] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    uncertainty_flags: list[str] = Field(default_factory=list)
+    model_confidence: float = Field(default=0.0, ge=0, le=1)
+
+    def is_empty(self) -> bool:
+        return not any([
+            self.clinical_summary, self.tcm_diagnosis_hypotheses,
+            self.eight_principle_differentiation, self.pattern_hypotheses,
+            self.pathogenesis, self.treatment_principle,
+            self.formula_hypotheses, self.missing_information,
+        ])

@@ -5,7 +5,10 @@ from app.schemas.recommendation import (
     PatternHypothesis,
     RecommendationResponse,
 )
-from app.schemas.reasoning import ClarificationQuestion
+from app.schemas.reasoning import (
+    ClarificationQuestion,
+    ClinicalReasoningEnvelope,
+)
 from app.schemas.safety import SafetyScreenRequest
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
 from app.services.knowledge.tse_repository import TSEKnowledgeRepository
@@ -106,6 +109,35 @@ class RecommendationAssembler:
         # Validation failure is inert: rejected proposals simply do not appear
         # and the governed result is untouched.
         # -------------------------------------------------------------
+        # -------------------------------------------------------------
+        # X1D-LEGACYDIAG2: retain the model's clinical reasoning.
+        #
+        # The legacy system produced this reasoning and it is the main reason
+        # that system felt clinically useful. Its mistake was letting the same
+        # prose become a purchasable formula by way of a regex. Here the
+        # reasoning is kept as typed MODEL_HYPOTHESIS objects and nothing more.
+        #
+        # This deliberately does NOT touch the block below, which decides
+        # formula_candidates. formula_hypotheses and formula_candidates are
+        # separate channels: one records what the model thought, the other is
+        # governed by the reviewed corpus and is unchanged by this phase.
+        #
+        # Validation failure is contained: an unusable envelope becomes an
+        # empty one, never a failed recommendation.
+        # -------------------------------------------------------------
+        try:
+            envelope = ClinicalReasoningEnvelope(**(result.clinical_reasoning or {}))
+        except Exception:  # noqa: BLE001 - reasoning must not break clinical work
+            envelope = ClinicalReasoningEnvelope()
+            uncertainty_flags.append("MODEL_REASONING_ENVELOPE_UNPARSEABLE")
+        reasoning.clinical_reasoning = envelope
+
+        if envelope.formula_hypotheses:
+            # Stated explicitly so the distinction is legible in the output
+            # itself, not only in the type system.
+            uncertainty_flags.append(
+                "MODEL_FORMULA_HYPOTHESES_RETAINED_NOT_ELIGIBLE")
+
         deterministic_fields = [m.field for m in reasoning.missing_information]
         try:
             accepted = validate_proposals(
