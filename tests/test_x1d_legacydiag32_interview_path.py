@@ -122,7 +122,7 @@ class TestScenarioA_Routing:
         """A case must always end up getting full clinical reasoning."""
         mode, reason = decide_mode(accumulated_text=SPARSE,
                                    missing_information=missing("HIGH"),
-                                   turn_count=MAX_INTERVIEW_TURNS)
+                                   interview_depth=MAX_INTERVIEW_TURNS)
         assert mode == FULL_REASONING
         assert reason == REASON_DEPTH_REACHED
 
@@ -157,7 +157,7 @@ class TestScenarioA_Routing:
     def test_routing_takes_no_model_output_as_an_argument(self):
         signature = inspect.signature(decide_mode)
         assert set(signature.parameters) == {
-            "accumulated_text", "missing_information", "turn_count",
+            "accumulated_text", "missing_information", "interview_depth",
             "supports_interview"}
 
     def test_routing_is_reproducible(self):
@@ -168,9 +168,9 @@ class TestScenarioA_Routing:
                                missing_information=missing("MEDIUM")) == first
 
     @pytest.mark.parametrize("bad", [None, "two", -1, 0])
-    def test_a_nonsense_turn_count_does_not_crash_routing(self, bad):
+    def test_a_nonsense_depth_does_not_crash_routing(self, bad):
         mode, _ = decide_mode(accumulated_text=SPARSE,
-                              missing_information=[], turn_count=bad)
+                              missing_information=[], interview_depth=bad)
         assert mode in (INTERVIEW, FULL_REASONING)
 
 

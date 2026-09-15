@@ -96,7 +96,7 @@ class RecommendationAssembler:
             accumulated_text=accumulated_text,
             missing_information=self.reasoning.analyze(
                 request, []).missing_information,
-            turn_count=getattr(request, "turn_count", 1),
+            interview_depth=getattr(request, "interview_depth", 0),
             supports_interview=provider_supports_interview(self.provider),
         )
         interview_mode = mode == INTERVIEW

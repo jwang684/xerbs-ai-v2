@@ -22,10 +22,15 @@ decision never depends on the model:
     HIGH-priority missing information, and whether CLARIFY2 coverage still has
     a material domain unknown -- both computed from accumulated patient text;
 
-  * the turn number, which guarantees an exit. At the depth where core stops
-    asking adaptive questions, this stops interviewing too and the full
-    contract runs. A case therefore always ends with full reasoning rather
-    than interviewing forever.
+  * the governed interview depth, which guarantees an exit. It is counted by
+    core from its own trace rows -- same user, same case, excluding this
+    submission's own idempotency key so a replay does not advance it -- and
+    arrives through the typed intake. A case therefore always reaches full
+    reasoning rather than interviewing forever.
+
+    The browser also sends a turn_count on the form. It is not this value and
+    must never be: handing the depth limit to the party being limited is not a
+    limit. core derives the number and the browser cannot reach it.
 
 The model's own ``information_sufficient`` is advisory and is deliberately not
 an input here. A model that decides when questioning ends decides when
@@ -48,10 +53,22 @@ from app.services.clarification.coverage import assess_coverage
 INTERVIEW = "INTERVIEW"
 FULL_REASONING = "FULL_REASONING"
 
-# The turn at which interviewing stops regardless of coverage. Mirrors core's
-# clarification_policy.MAX_CLARIFICATION_TURNS: past that depth core shows no
-# further adaptive questions, so continuing to interview would spend a call
-# producing questions nobody will be asked.
+# How many interview turns a case may have, in total.
+#
+# The unit is deliberate and worth stating once: interview_depth counts the
+# governed turns this case has ALREADY COMPLETED, not including the submission
+# being routed. So turn 1 arrives as depth 0 and turn 4 as depth 3, and
+# "depth >= MAX_INTERVIEW_TURNS" reads exactly as "three interview turns have
+# happened; that is enough".
+#
+#   turn 1  depth 0  ->  INTERVIEW
+#   turn 2  depth 1  ->  INTERVIEW
+#   turn 3  depth 2  ->  INTERVIEW
+#   turn 4  depth 3  ->  FULL_REASONING / INTERVIEW_DEPTH_REACHED
+#
+# Mirrors core's clarification_policy.MAX_CLARIFICATION_TURNS: past that depth
+# core shows no further adaptive questions anyway, so continuing to interview
+# would spend a call producing questions nobody will be asked.
 MAX_INTERVIEW_TURNS = 3
 
 # Reasons, for the record. A turn should never be routed without one.
@@ -78,22 +95,31 @@ def decide_mode(
     *,
     accumulated_text: str,
     missing_information: Optional[Sequence[Any]] = None,
-    turn_count: int = 1,
+    interview_depth: int = 0,
     supports_interview: bool = True,
 ) -> Tuple[str, str]:
     """Return (mode, reason). Deterministic, and never consults the model.
 
     ``missing_information`` is the deterministic engine's own output, passed in
     rather than recomputed so there is one marker-matching implementation.
+
+    ``interview_depth`` is the number of governed turns this case has already
+    completed, excluding the submission being routed. See MAX_INTERVIEW_TURNS
+    above for the turn-by-turn table.
+
+    The depth check comes before the coverage check on purpose. Once the
+    interview budget is spent, the answer is "stop asking and reason with what
+    we have" regardless of how much is still unknown -- which is exactly the
+    case coverage would otherwise keep sending back to interview mode forever.
     """
     if not supports_interview:
         return FULL_REASONING, REASON_PROVIDER_UNSUPPORTED
 
     try:
-        turn = int(turn_count or 1)
+        depth = int(interview_depth or 0)
     except (TypeError, ValueError):
-        turn = 1
-    if turn >= MAX_INTERVIEW_TURNS:
+        depth = 0
+    if depth >= MAX_INTERVIEW_TURNS:
         return FULL_REASONING, REASON_DEPTH_REACHED
 
     has_high = any(
@@ -112,6 +138,7 @@ def describe_policy() -> dict:
     return {
         "modes": [INTERVIEW, FULL_REASONING],
         "max_interview_turns": MAX_INTERVIEW_TURNS,
+        "depth_unit": "governed turns already completed, excluding this one",
         "reasons": [REASON_PROVIDER_UNSUPPORTED, REASON_DEPTH_REACHED,
                     REASON_MATERIALLY_MISSING, REASON_COVERAGE_SUFFICIENT],
     }
