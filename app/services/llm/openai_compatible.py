@@ -126,6 +126,8 @@ clarification_proposals rules:
 - propose at most 3, only for information that is genuinely missing and would
   materially change the next reasoning step
 - ask only about the presenting complaint; do not run a general checklist
+- prefer a question whose answer would change which of your
+  pattern_hypotheses is primary, or would resolve a contradicting finding
 - do not ask for anything already stated in the input
 - questions must be short, plain, and answerable by a patient
 - never request credentials, payment details, identifiers, dosage decisions,

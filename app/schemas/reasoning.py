@@ -65,6 +65,18 @@ class ReasoningResponse(BaseModel):
     clarification_questions: list[ClarificationQuestion] = Field(default_factory=list)
     # X1D-LEGACYDIAG2: model reasoning, retained with no authority.
     clinical_reasoning: "ClinicalReasoningEnvelope | None" = None
+    # X1D-CLARIFY2: whether anything material is still worth asking.
+    #
+    # This governs question emission only. It is NOT a clinical readiness
+    # signal and must never be read as one -- ready_for_formula_retrieval above
+    # is the only field that gates corpus retrieval, and it is computed from
+    # missing_information and corpus matching exactly as before.
+    clarification_sufficiency: str | None = None
+    # X1D-CLARIFY2: 十问歌-derived coverage of the accumulated patient facts,
+    # as domain -> KNOWN / PARTIAL / UNKNOWN / NOT_RELEVANT. Operational
+    # observation: it records which domains the patient has spoken to, and
+    # never asserts a value for one they have not.
+    clinical_coverage: dict = Field(default_factory=dict)
 
 
 # ======================================================================

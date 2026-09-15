@@ -16,6 +16,13 @@ from app.services.llm.provider import LLMProvider
 from app.services.reasoning.engine import DiagnosticReasoningEngine
 from app.services.safety.engine import SafetyEngine
 from app.services.clarification.validator import validate_proposals
+from app.services.clarification.coverage import (
+    Candidate,
+    assess_coverage,
+    extract_differential_signals,
+    resolve_domain,
+    select_questions,
+)
 
 
 PROMPT_VERSION = "xerbs-v2-recommendation-0.10-convergence-base44-contract"
@@ -149,6 +156,114 @@ class RecommendationAssembler:
             ]
         except Exception:  # noqa: BLE001 - clarification must not break clinical work
             reasoning.clarification_questions = []
+
+        # -------------------------------------------------------------
+        # X1D-CLARIFY2: ask the fewest questions that most reduce
+        # clinically relevant uncertainty.
+        #
+        # The validator above decided what MAY be asked. This decides what is
+        # WORTH asking, by scoring the deterministic checklist and the
+        # validated adaptive proposals against one another -- the checklist is
+        # not privileged, because giving a generic category question automatic
+        # precedence is what crowded complaint-specific questions out of the
+        # visible budget in the first place.
+        #
+        # Three deliberate boundaries:
+        #
+        #   * missing_information is NOT touched. It remains the complete
+        #     record of what is unknown and the sole input to the HIGH-priority
+        #     component of ready_for_formula_retrieval. Pruning the question
+        #     list never converts an unknown into a known.
+        #
+        #   * the envelope is advisory input only. Its missing_information and
+        #     contradicting_findings can raise a question the validator already
+        #     approved; they cannot create, edit or answer one.
+        #
+        #   * the sufficiency verdict governs question emission and nothing
+        #     else. It is not readiness, not safety, and not eligibility.
+        #
+        # Failure is inert: any problem here leaves the CLARIFY1 result in
+        # place, because a ranking fault must never cost a valid diagnosis.
+        # -------------------------------------------------------------
+        try:
+            accumulated_text = " ".join(
+                [request.text_input or "", *request.symptoms])
+            coverage = assess_coverage(accumulated_text)
+            signals = extract_differential_signals(envelope)
+
+            # The reasoning engine appends to missing_information and
+            # followup_questions in lockstep, so index i pairs. If that ever
+            # stops holding, pair nothing and leave the list alone rather than
+            # guessing which question belongs to which field.
+            paired = (len(reasoning.followup_questions)
+                      == len(reasoning.missing_information))
+
+            deterministic_candidates = []
+            if paired:
+                for item, text in zip(reasoning.missing_information,
+                                      reasoning.followup_questions):
+                    domain, certain = resolve_domain(item.field, text)
+                    deterministic_candidates.append(Candidate(
+                        field=item.field,
+                        question=text,
+                        domain=domain,
+                        kind="deterministic",
+                        high_priority_missing=(
+                            str(item.priority or "").upper() == "HIGH"),
+                        domain_certain=certain,
+                        payload=text,
+                    ))
+
+            adaptive_candidates = []
+            for question in reasoning.clarification_questions:
+                domain, certain = resolve_domain(question.field,
+                                                 question.question)
+                adaptive_candidates.append(Candidate(
+                    field=question.field,
+                    question=question.question,
+                    domain=domain,
+                    kind="adaptive",
+                    model_priority=question.priority,
+                    domain_certain=certain,
+                    payload=question,
+                ))
+
+            selection = select_questions(
+                deterministic=deterministic_candidates,
+                adaptive=adaptive_candidates,
+                coverage=coverage,
+                signals=signals,
+            )
+
+            if paired:
+                reasoning.followup_questions = list(selection.deterministic)
+            # The coverage floor rides the typed channel alongside the model's
+            # own questions: it carries choice controls the plain-text followup
+            # list cannot express, and core's state gate then governs both.
+            reasoning.clarification_questions = (
+                list(selection.adaptive)
+                + [ClarificationQuestion(**q) for q in selection.fallback])
+            reasoning.clarification_sufficiency = selection.sufficiency
+            reasoning.clinical_coverage = coverage.as_dict()
+
+            uncertainty_flags.append(
+                "CLARIFICATION_%s" % selection.sufficiency)
+            if selection.suppressed_count:
+                uncertainty_flags.append(
+                    "CLARIFICATION_QUESTIONS_SUPPRESSED_NOT_MATERIAL")
+            # Why a turn asked what it asked. Without these, a turn that asks
+            # nothing is indistinguishable from a turn whose proposals were all
+            # rejected, which is exactly the ambiguity that made the first
+            # staging run hard to read.
+            if not result.clarification_proposals:
+                uncertainty_flags.append("CLARIFICATION_NO_MODEL_PROPOSALS")
+            elif not adaptive_candidates:
+                uncertainty_flags.append(
+                    "CLARIFICATION_PROPOSALS_REJECTED_BY_VALIDATOR")
+            if selection.fallback_used:
+                uncertainty_flags.append("CLARIFICATION_COVERAGE_FALLBACK_USED")
+        except Exception:  # noqa: BLE001 - ranking must not break clinical work
+            uncertainty_flags.append("CLARIFICATION_COVERAGE_UNAVAILABLE")
 
         # -------------------------------------------------------------
         # 3. Determine whether reviewed corpus formulas are available.
@@ -353,8 +468,12 @@ class RecommendationAssembler:
         # -------------------------------------------------------------
         summary = result.summary.strip()
 
+        # Keyed off missing_information rather than followup_questions:
+        # X1D-CLARIFY2 prunes the question list down to what is worth asking
+        # now, while missing_information stays the complete record of what is
+        # unknown. The summary should reflect the record, not the shortlist.
         if (
-            reasoning.followup_questions
+            reasoning.missing_information
             and not reasoning.ready_for_formula_retrieval
         ):
             clarification_message = (
