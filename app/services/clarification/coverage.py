@@ -629,6 +629,9 @@ class SelectionResult:
     suppressed_count: int = 0
     adaptive_budget: int = 0
     scores: List[ScoredCandidate] = field(default_factory=list)
+    # X1D-CLARIFY3.1: questions dropped for asking about a domain another
+    # selected question already occupies. Counted, never silent.
+    same_domain_suppressed: int = 0
     # Coverage-table questions, carried separately from the model's own. They
     # are typed patient questions, so the assembler routes them through the
     # clarification channel rather than the plain-text followup list.
@@ -742,7 +745,33 @@ def select_questions(
 
     ordered = [s for _, s in sorted(enumerate(eligible),
                                     key=lambda pair: (-pair[1].score, pair[0]))]
-    selected = ordered[:max(0, limit)]
+
+    # X1D-CLARIFY3.1: one clinical domain, one visible slot per turn.
+    #
+    # Walked in rank order, so the question that occupies a domain is the
+    # highest-scoring one that wants it and the duplicate is the one dropped.
+    # Only a certain (field-derived) mapping can occupy a domain or be
+    # suppressed by one -- a text match says the question mentions the domain,
+    # not that it is about it, and that is too weak to silence a question on.
+    #
+    # Dropping a duplicate frees its slot for the next candidate rather than
+    # shortening the turn, which is why this filters during the walk instead
+    # of after the cut.
+    selected: List[ScoredCandidate] = []
+    occupied: set = set()
+    same_domain_suppressed = 0
+    for scored_candidate in ordered:
+        if len(selected) >= max(0, limit):
+            break
+        domain = scored_candidate.candidate.domain
+        certain = (domain is not None
+                   and scored_candidate.candidate.domain_certain)
+        if certain and domain in occupied:
+            same_domain_suppressed += 1
+            continue
+        if certain:
+            occupied.add(domain)
+        selected.append(scored_candidate)
 
     # The floor. Only when this turn has said the information is insufficient
     # and the ranking still produced almost nothing -- which is what happens
@@ -764,6 +793,7 @@ def select_questions(
         suppressed_count=len(considered) - len(selected),
         adaptive_budget=adaptive_budget,
         scores=selected,
+        same_domain_suppressed=same_domain_suppressed,
         fallback=[c.payload for c in fallback],
     )
 

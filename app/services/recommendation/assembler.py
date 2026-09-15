@@ -274,6 +274,13 @@ class RecommendationAssembler:
                     "CLARIFICATION_PROPOSALS_REJECTED_BY_VALIDATOR")
             if selection.fallback_used:
                 uncertainty_flags.append("CLARIFICATION_COVERAGE_FALLBACK_USED")
+            if selection.same_domain_suppressed:
+                # X1D-CLARIFY3.1. Not rejection telemetry: the proposal was
+                # valid and accepted, and was then not shown because another
+                # selected question already covered its domain this turn.
+                uncertainty_flags.append(
+                    "CLARIFICATION_SAME_DOMAIN_DUPLICATE_SUPPRESSED_%d"
+                    % selection.same_domain_suppressed)
             # X1D-CLARIFY3: and now, which rule fired. Fail-open on its own,
             # so an observability fault costs a log line rather than a
             # governed clinical result.
