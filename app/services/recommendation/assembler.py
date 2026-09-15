@@ -17,6 +17,9 @@ from app.services.llm.provider import LLMProvider
 from app.services.reasoning.engine import DiagnosticReasoningEngine
 from app.services.safety.engine import SafetyEngine
 from app.services.clarification.validator import validate_proposals_detailed
+from app.services.recommendation.consumer_projection import (
+    build_consumer_reasoning,
+)
 from app.services.interview.mode import (
     INTERVIEW,
     decide_mode,
@@ -191,6 +194,14 @@ class RecommendationAssembler:
                 uncertainty_flags.append("MODEL_REASONING_ENVELOPE_UNPARSEABLE")
             reasoning.clinical_reasoning = envelope
             signal_source = envelope
+            # X1D-LEGACYDIAG4.2: derive the patient-readable view here, beside
+            # the envelope, so prohibited fields never travel any further.
+            try:
+                reasoning.consumer_reasoning = build_consumer_reasoning(
+                    envelope, fallback_summary=result.summary)
+            except Exception:  # noqa: BLE001 - display must not break clinical work
+                reasoning.consumer_reasoning = {}
+                uncertainty_flags.append("CONSUMER_REASONING_UNAVAILABLE")
 
         uncertainty_flags.append("INFERENCE_MODE_%s" % mode)
         uncertainty_flags.append("INFERENCE_ROUTE_%s" % mode_reason)

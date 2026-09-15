@@ -77,6 +77,12 @@ class ReasoningResponse(BaseModel):
     # observation: it records which domains the patient has spoken to, and
     # never asserts a value for one they have not.
     clinical_coverage: dict = Field(default_factory=dict)
+    # X1D-LEGACYDIAG4.2: the allowlisted, patient-readable view of
+    # clinical_reasoning. DERIVED from MODEL_GENERATED content and display-only
+    # -- it upgrades nothing and is never read by any governance step. Built by
+    # consumer_projection.build_consumer_reasoning; a field absent from that
+    # allowlist cannot appear here by being forgotten.
+    consumer_reasoning: dict = Field(default_factory=dict)
 
 
 # ======================================================================
