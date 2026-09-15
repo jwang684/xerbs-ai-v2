@@ -108,8 +108,10 @@ class TestLatencyMeasurement:
         from app.services.llm.openai_compatible import OpenAICompatibleProvider
 
         code = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(
-            OpenAICompatibleProvider.generate_recommendation))))
+            OpenAICompatibleProvider))))
         # Wall clock can step backwards under NTP and yield negative durations.
+        # X1D-LEGACYDIAG4.1: the timed span moved into _call_blocking /
+        # _call_streaming. Both are checked, which is wider than before.
         assert "time.monotonic()" in code
         assert "time.time()" not in code
 

@@ -61,6 +61,11 @@ class ProviderResult:
     # validation failure is contained there rather than at the provider. Empty
     # on a full-reasoning call.
     interview: dict = field(default_factory=dict)
+    # X1D-LEGACYDIAG4.1: how long until the provider's first content chunk.
+    # None on a blocking call, where the question does not apply. Recorded
+    # alongside provider_latency_ms rather than replacing it, so the existing
+    # TELEMETRY1 series keeps its meaning.
+    first_delta_ms: float | None = None
     # X1D-LEGACYDIAG2: raw reasoning block, typed later by the assembler so a
     # validation failure is contained there rather than at the provider.
     clinical_reasoning: dict = field(default_factory=dict)
@@ -75,7 +80,7 @@ class LLMProvider(ABC):
     async def generate_recommendation(self, *, text_input: str, symptoms: list[str], goals: list[str], constraints: list[str], image_data: str | None, language: str) -> ProviderResult:
         raise NotImplementedError
 
-    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str) -> ProviderResult:
+    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str, on_display_text=None) -> ProviderResult:
         """The small call: what should we ask next, and why.
 
         Concrete rather than abstract so an existing provider keeps working

@@ -11,6 +11,7 @@ from app.services.llm.provider import (
     ProviderResult,
     ProviderUsage,
 )
+from app.services.llm.streaming import SummaryStreamScanner
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +292,7 @@ class OpenAICompatibleProvider(LLMProvider):
         text_input: str,
         symptoms: list[str],
         language: str,
+        on_display_text=None,
     ) -> ProviderResult:
         """The small call. Same transport, different contract.
 
@@ -305,8 +307,8 @@ class OpenAICompatibleProvider(LLMProvider):
              "language": language},
             ensure_ascii=False,
         )
-        data, usage, provider_latency_ms = await self._call(
-            INTERVIEW_SYSTEM_PROMPT, content)
+        data, usage, provider_latency_ms, first_delta_ms = await self._call(
+            INTERVIEW_SYSTEM_PROMPT, content, on_display_text)
 
         raw_proposals = data.get("clarification_proposals")
         if not isinstance(raw_proposals, list):
@@ -336,11 +338,24 @@ class OpenAICompatibleProvider(LLMProvider):
             clarification_proposals_discarded=len(raw_proposals) - len(well_formed),
             inference_purpose=INTERVIEW,
             interview=interview,
+            first_delta_ms=first_delta_ms,
         )
 
-    async def _call(self, system_prompt: str, content):
+    async def _call(self, system_prompt: str, content, on_display_text=None):
         """One provider round trip. Shared so both contracts use the same
-        transport, the same error handling and the same redaction."""
+        transport, the same error handling and the same redaction.
+
+        X1D-LEGACYDIAG4.1: when ``on_display_text`` is supplied the call is
+        streamed and the callback receives fragments of the response's summary
+        field as they arrive. Everything else is unchanged -- the body is still
+        accumulated in full, still parsed with json.loads, and still validated
+        before it becomes anything. Streaming affects when the patient sees
+        text, never what is true.
+
+        Returns (data, usage, provider_latency_ms, first_delta_ms).
+        provider_latency_ms keeps its existing meaning -- the whole provider
+        call -- so the TELEMETRY1 series stays comparable across the change.
+        """
         payload = {
             "model": self.model,
             "messages": [
@@ -355,6 +370,11 @@ class OpenAICompatibleProvider(LLMProvider):
         }
         url = f"{self.base_url}/chat/completions"
 
+        if on_display_text is None:
+            return await self._call_blocking(url, headers, payload)
+        return await self._call_streaming(url, headers, payload, on_display_text)
+
+    async def _call_blocking(self, url, headers, payload):
         started = time.monotonic()
         async with httpx.AsyncClient(timeout=90.0) as client:
             try:
@@ -388,9 +408,95 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ProviderCallError(
                 "LLM provider response did not contain a message.") from exc
 
+        return (self._decode(raw), _extract_usage(response_data),
+                provider_latency_ms, None)
+
+    async def _call_streaming(self, url, headers, payload, on_display_text):
+        """Same request, read incrementally.
+
+        stream_options.include_usage is required, not optional: without it a
+        streamed call reports no token counts at all and the TELEMETRY1 cost
+        record would silently become empty. Losing accounting to gain a
+        progress bar is not a trade worth making, so if the final usage chunk
+        never arrives the usage is reported as unknown rather than zero.
+        """
+        streamed = dict(payload)
+        streamed["stream"] = True
+        streamed["stream_options"] = {"include_usage": True}
+
+        scanner = SummaryStreamScanner()
+        body_parts: list[str] = []
+        usage_payload = None
+        first_delta_ms = None
+        started = time.monotonic()
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                async with client.stream("POST", url, headers=headers,
+                                         json=streamed) as response:
+                    if response.is_error:
+                        detail = await response.aread()
+                        logger.error(
+                            "LLM provider returned %s: %s",
+                            response.status_code,
+                            _redact(detail.decode("utf-8", "replace"),
+                                    self.api_key)[:2000])
+                        raise ProviderCallError(
+                            f"LLM provider returned HTTP {response.status_code}.")
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if chunk == "[DONE]":
+                            break
+                        try:
+                            event = json.loads(chunk)
+                        except json.JSONDecodeError:
+                            # One unreadable transport frame is not a clinical
+                            # failure; the accumulated body is validated later
+                            # and will fail then if it is genuinely broken.
+                            continue
+
+                        if isinstance(event.get("usage"), dict):
+                            usage_payload = event
+
+                        for choice in event.get("choices") or []:
+                            piece = (choice.get("delta") or {}).get("content")
+                            if not piece:
+                                continue
+                            if first_delta_ms is None:
+                                first_delta_ms = (
+                                    time.monotonic() - started) * 1000.0
+                            body_parts.append(piece)
+                            fresh = scanner.feed("".join(body_parts))
+                            if fresh:
+                                try:
+                                    on_display_text(fresh)
+                                except Exception:  # noqa: BLE001
+                                    # A display sink must never be able to
+                                    # interrupt generation.
+                                    pass
+            except ProviderCallError:
+                raise
+            except httpx.RequestError as exc:
+                logger.error("LLM transport failure (%s): %s",
+                             type(exc).__name__,
+                             _redact(str(exc), self.api_key))
+                raise ProviderCallError(
+                    f"LLM provider unreachable ({type(exc).__name__})."
+                ) from exc
+
+        provider_latency_ms = (time.monotonic() - started) * 1000.0
+        raw = "".join(body_parts)
+        return (self._decode(raw),
+                _extract_usage(usage_payload) if usage_payload else None,
+                provider_latency_ms, first_delta_ms)
+
+    def _decode(self, raw):
+        """The one place a provider body becomes an object. Unchanged rules."""
         if not raw:
             raise ProviderCallError("LLM provider returned empty message content.")
-
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -398,12 +504,10 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ProviderCallError(
                 "LLM provider returned content that was not valid JSON."
             ) from exc
-
         if not isinstance(data, dict):
             raise ProviderCallError(
                 "LLM provider returned JSON that was not an object.")
-
-        return data, _extract_usage(response_data), provider_latency_ms
+        return data
 
     async def generate_recommendation(
         self,
@@ -414,6 +518,7 @@ class OpenAICompatibleProvider(LLMProvider):
         constraints: list[str],
         image_data: str | None,
         language: str,
+        on_display_text=None,
     ) -> ProviderResult:
 
         user_payload = {
@@ -447,102 +552,17 @@ class OpenAICompatibleProvider(LLMProvider):
                 },
             ]
 
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": content,
-                },
-            ],
-            "response_format": {
-                "type": "json_object"
-            },
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        url = f"{self.base_url}/chat/completions"
-
-        # X1D-TELEMETRY1: time the external call only, on a monotonic clock.
+        # X1D-LEGACYDIAG4.1: one transport for both contracts.
         #
-        # Monotonic because wall-clock time can step backwards (NTP), which
-        # would produce negative or absurd durations in the cost record. The
-        # span covers the provider HTTP call alone -- not corpus resolution,
-        # safety or persistence -- so provider_latency_ms stays comparable
-        # across deployments and is never confused with end-to-end time.
-        started = time.monotonic()
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            try:
-                response = await client.post(
-                    url,
-                    headers=headers,
-                    json=payload,
-                )
-            except httpx.RequestError as exc:
-                # str(exc) can carry the full request URL; log it, do not return it.
-                logger.error(
-                    "LLM transport failure (%s): %s",
-                    type(exc).__name__,
-                    _redact(str(exc), self.api_key),
-                )
-                raise ProviderCallError(
-                    "LLM provider unreachable "
-                    f"({type(exc).__name__})."
-                ) from exc
+        # This block used to carry its own copy of the request, the error
+        # handling and the redaction. Routing it through _call means the
+        # streaming path, the timeout, the redaction rules and the decode
+        # rules are shared -- and that the full-reasoning turn, which is the
+        # 15-19s one, can stream its summary without a second code path
+        # existing to drift away from the first.
+        data, usage, provider_latency_ms, first_delta_ms = await self._call(
+            SYSTEM_PROMPT, content, on_display_text)
 
-        provider_latency_ms = (time.monotonic() - started) * 1000.0
-
-        if response.is_error:
-            # A 401 body echoes part of the key back. Log it redacted; the
-            # caller gets the status code, which is the actionable part.
-            logger.error(
-                "LLM provider returned %s: %s",
-                response.status_code,
-                _redact(response.text, self.api_key)[:2000],
-            )
-            raise ProviderCallError(
-                f"LLM provider returned HTTP {response.status_code}."
-            )
-
-        try:
-            response_data = response.json()
-        except Exception as exc:
-            logger.error("LLM provider returned a non-JSON body")
-            raise ProviderCallError(
-                "LLM provider returned a response that was not JSON."
-            ) from exc
-
-        try:
-            raw = response_data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            logger.error("LLM response lacked choices[0].message.content")
-            raise ProviderCallError(
-                "LLM provider response did not contain a message."
-            ) from exc
-
-        if not raw:
-            raise ProviderCallError(
-                "LLM provider returned empty message content."
-            )
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            # raw is model output derived from patient text; log, do not return.
-            logger.error("LLM returned non-JSON content: %s", str(raw)[:2000])
-            raise ProviderCallError(
-                "LLM provider returned content that was not valid JSON."
-            ) from exc
-
-        usage = _extract_usage(response_data)
 
         raw_reasoning = _extract_clinical_reasoning(data)
 
@@ -594,6 +614,7 @@ class OpenAICompatibleProvider(LLMProvider):
             model=self.model,
             usage=usage,
             provider_latency_ms=provider_latency_ms,
+            first_delta_ms=first_delta_ms,
             clarification_proposals=well_formed,
             clarification_proposals_discarded=discarded_proposals,
             clinical_reasoning=raw_reasoning,

@@ -32,7 +32,7 @@ class Base44GenerationService:
             recommendation=rec,error_code=row.error_code,error_message=row.error_message,
         )
 
-    async def generate(self,req:Base44GenerateRequest,idempotency_key:str,correlation_id:str)->Base44GenerationResponse:
+    async def generate(self,req:Base44GenerateRequest,idempotency_key:str,correlation_id:str,on_display_text=None)->Base44GenerationResponse:
         request_hash=self._hash(req)
         with self.Session.begin() as s:
             existing=s.scalar(select(GenerationRequest).where(GenerationRequest.idempotency_key==idempotency_key))
@@ -46,9 +46,9 @@ class Base44GenerationService:
             )
             s.add(row)
             generation_id=row.id
-        return await self._execute(generation_id)
+        return await self._execute(generation_id,on_display_text)
 
-    async def _execute(self,generation_id:str)->Base44GenerationResponse:
+    async def _execute(self,generation_id:str,on_display_text=None)->Base44GenerationResponse:
         with self.Session() as s:
             row=s.get(GenerationRequest,generation_id)
             if row is None: raise GenerationNotFoundError("Generation not found")
@@ -64,7 +64,8 @@ class Base44GenerationService:
             recommendation=await RecommendationAssembler(self.provider).generate(
                 intake, on_provider_result=lambda r: captured.__setitem__("result", r),
                 on_clarification_outcomes=lambda o, d: captured.__setitem__(
-                    "clarification", (o, d)))
+                    "clarification", (o, d)),
+                on_display_text=on_display_text)
             generation_latency_ms=(time.monotonic()-started)*1000.0
             with self.Session.begin() as s:
                 row=s.get(GenerationRequest,generation_id)

@@ -13,7 +13,7 @@ class MockProvider(LLMProvider):
             model="mock-v1",
         )
 
-    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str) -> ProviderResult:
+    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str, on_display_text=None) -> ProviderResult:
         """Offline stand-in. Proposes nothing, so the coverage floor supplies
         the questions -- which is the correct behaviour for a provider that
         performs no clinical inference."""

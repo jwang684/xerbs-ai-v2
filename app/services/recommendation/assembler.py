@@ -66,6 +66,7 @@ class RecommendationAssembler:
         request: RecommendationRequest,
         on_provider_result=None,
         on_clarification_outcomes=None,
+        on_display_text=None,
     ) -> RecommendationResponse:
         """on_provider_result is an X1D-TELEMETRY1 observer.
 
@@ -106,6 +107,7 @@ class RecommendationAssembler:
                 text_input=request.text_input,
                 symptoms=request.symptoms,
                 language=request.language,
+                on_display_text=on_display_text,
             )
         else:
             result = await self.provider.generate_recommendation(
@@ -115,6 +117,7 @@ class RecommendationAssembler:
                 constraints=request.constraints,
                 image_data=request.image_data,
                 language=request.language,
+                on_display_text=on_display_text,
             )
 
         if on_provider_result is not None:

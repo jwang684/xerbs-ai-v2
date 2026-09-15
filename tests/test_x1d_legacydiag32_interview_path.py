@@ -465,9 +465,16 @@ class TestScenarioQR_FailsSafely:
 
     def test_r_a_provider_failure_creates_no_diagnosis(self):
         """ProviderCallError propagates; it is never turned into a result."""
-        code = _executable_code(oc.OpenAICompatibleProvider._call)
+        # X1D-LEGACYDIAG4.1: _call is now a dispatcher over a blocking
+        # and a streaming branch. Scoped to the class so the property is
+        # checked in BOTH branches -- wider than before, not looser.
+        code = _executable_code(oc.OpenAICompatibleProvider)
         assert "ProviderCallError" in code
-        assert "formula_candidates" not in code
+        for branch in (oc.OpenAICompatibleProvider._call_blocking,
+                       oc.OpenAICompatibleProvider._call_streaming):
+            body = _executable_code(branch)
+            assert "ProviderCallError" in body
+            assert "formula_candidates" not in body
 
     def test_r2_the_failure_class_is_shared_by_both_contracts(self):
         """One transport, one error path, one redaction rule."""
@@ -476,12 +483,20 @@ class TestScenarioQR_FailsSafely:
         full = _executable_code(
             oc.OpenAICompatibleProvider.generate_recommendation)
         assert "self._call(" in interview
-        assert "_redact" in _executable_code(oc.OpenAICompatibleProvider._call)
+        for branch in (oc.OpenAICompatibleProvider._call_blocking,
+                       oc.OpenAICompatibleProvider._call_streaming):
+            assert "_redact" in _executable_code(branch)
         assert "httpx" not in interview      # transport is not duplicated
 
     def test_r3_the_interview_call_redacts_like_the_full_one(self):
-        code = _executable_code(oc.OpenAICompatibleProvider._call)
-        assert "_redact(response.text, self.api_key)" in code
+        """Every path that can surface a provider body redacts the key first."""
+        for branch in (oc.OpenAICompatibleProvider._call_blocking,
+                       oc.OpenAICompatibleProvider._call_streaming):
+            code = _executable_code(branch)
+            assert "self.api_key" in code
+            assert "_redact(" in code
+            # the raw body must never leave unredacted
+            assert "response.text)" not in code
 
 
 # ======================================================================
