@@ -48,6 +48,11 @@ class ProviderResult:
     # instructions to follow. Nothing renders these directly -- the
     # deterministic validator decides what a patient sees.
     clarification_proposals: list[dict] = field(default_factory=list)
+    # X1D-CLARIFY3: how many proposals were dropped here for not being JSON
+    # objects. Without this count, "the model proposed nothing" and "the model
+    # proposed several things of the wrong shape" are the same observation,
+    # and they call for opposite fixes.
+    clarification_proposals_discarded: int = 0
     # X1D-LEGACYDIAG2: raw reasoning block, typed later by the assembler so a
     # validation failure is contained there rather than at the provider.
     clinical_reasoning: dict = field(default_factory=dict)

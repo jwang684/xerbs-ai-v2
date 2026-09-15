@@ -15,7 +15,8 @@ from app.services.knowledge.tse_repository import TSEKnowledgeRepository
 from app.services.llm.provider import LLMProvider
 from app.services.reasoning.engine import DiagnosticReasoningEngine
 from app.services.safety.engine import SafetyEngine
-from app.services.clarification.validator import validate_proposals
+from app.services.clarification.validator import validate_proposals_detailed
+from app.services.telemetry.clarification_rejection import outcome_flags
 from app.services.clarification.coverage import (
     Candidate,
     assess_coverage,
@@ -58,6 +59,7 @@ class RecommendationAssembler:
         self,
         request: RecommendationRequest,
         on_provider_result=None,
+        on_clarification_outcomes=None,
     ) -> RecommendationResponse:
         """on_provider_result is an X1D-TELEMETRY1 observer.
 
@@ -145,16 +147,26 @@ class RecommendationAssembler:
             uncertainty_flags.append(
                 "MODEL_FORMULA_HYPOTHESES_RETAINED_NOT_ELIGIBLE")
 
+        # X1D-CLARIFY3: keep the decisions, not just the survivors.
+        #
+        # validate_proposals_detailed makes exactly the same accept/reject
+        # calls as before and additionally reports why, so a turn that shows
+        # no adaptive questions can be explained from the record instead of
+        # guessed at. The accepted questions are taken from the same outcomes,
+        # so there is one decision procedure rather than two.
         deterministic_fields = [m.field for m in reasoning.missing_information]
+        proposal_outcomes = []
         try:
-            accepted = validate_proposals(
+            proposal_outcomes = validate_proposals_detailed(
                 result.clarification_proposals,
                 known_fields=deterministic_fields,
             )
             reasoning.clarification_questions = [
-                ClarificationQuestion(**q.as_dict()) for q in accepted
+                ClarificationQuestion(**o.question.as_dict())
+                for o in proposal_outcomes if o.accepted
             ]
         except Exception:  # noqa: BLE001 - clarification must not break clinical work
+            proposal_outcomes = []
             reasoning.clarification_questions = []
 
         # -------------------------------------------------------------
@@ -262,8 +274,28 @@ class RecommendationAssembler:
                     "CLARIFICATION_PROPOSALS_REJECTED_BY_VALIDATOR")
             if selection.fallback_used:
                 uncertainty_flags.append("CLARIFICATION_COVERAGE_FALLBACK_USED")
+            # X1D-CLARIFY3: and now, which rule fired. Fail-open on its own,
+            # so an observability fault costs a log line rather than a
+            # governed clinical result.
+            try:
+                uncertainty_flags.extend(outcome_flags(
+                    proposal_outcomes,
+                    malformed_count=result.clarification_proposals_discarded))
+            except Exception:  # noqa: BLE001 - observability is never fatal
+                uncertainty_flags.append("CLARIFICATION_REASONS_UNAVAILABLE")
         except Exception:  # noqa: BLE001 - ranking must not break clinical work
             uncertainty_flags.append("CLARIFICATION_COVERAGE_UNAVAILABLE")
+
+        if on_clarification_outcomes is not None:
+            # Observational only, exactly like on_provider_result: invoked for
+            # its side effect, return value ignored, and its own failure
+            # contained so observability can never cost a diagnosis.
+            try:
+                on_clarification_outcomes(
+                    proposal_outcomes,
+                    result.clarification_proposals_discarded)
+            except Exception:  # noqa: BLE001 - observability is never fatal
+                pass
 
         # -------------------------------------------------------------
         # 3. Determine whether reviewed corpus formulas are available.

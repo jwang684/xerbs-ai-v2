@@ -9,6 +9,7 @@ from app.schemas.integration import Base44GenerateRequest, Base44GenerationRespo
 from app.services.recommendation.assembler import RecommendationAssembler
 from app.services.llm.provider import LLMProvider
 from app.services.telemetry.provider_usage import record_provider_usage
+from app.services.telemetry.clarification_rejection import record_rejections
 
 class IdempotencyConflictError(ValueError): pass
 class GenerationNotFoundError(ValueError): pass
@@ -61,7 +62,9 @@ class Base44GenerationService:
             captured={}
             started=time.monotonic()
             recommendation=await RecommendationAssembler(self.provider).generate(
-                intake, on_provider_result=lambda r: captured.__setitem__("result", r))
+                intake, on_provider_result=lambda r: captured.__setitem__("result", r),
+                on_clarification_outcomes=lambda o, d: captured.__setitem__(
+                    "clarification", (o, d)))
             generation_latency_ms=(time.monotonic()-started)*1000.0
             with self.Session.begin() as s:
                 row=s.get(GenerationRequest,generation_id)
@@ -74,6 +77,17 @@ class Base44GenerationService:
                     correlation_id=row_correlation_id,
                     result=captured["result"],
                     generation_latency_ms=generation_latency_ms,
+                )
+            if "clarification" in captured:
+                # X1D-CLARIFY3: why the adaptive proposals were accepted or
+                # refused. Fail-open, and recorded only after the clinical
+                # result is safely persisted.
+                outcomes, discarded = captured["clarification"]
+                record_rejections(
+                    generation_id=generation_id,
+                    correlation_id=row_correlation_id,
+                    outcomes=outcomes,
+                    malformed_count=discarded,
                 )
             return response
         except Exception as exc:

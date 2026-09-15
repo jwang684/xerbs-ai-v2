@@ -652,7 +652,9 @@ class TestValidatorRemainsAuthority:
 
         code = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(
             module.RecommendationAssembler.generate))))
-        assert code.index("validate_proposals(") < code.index("select_questions(")
+        # X1D-CLARIFY3 renamed the call to validate_proposals_detailed; the
+        # property under test is the ordering, not the name.
+        assert code.index("validate_proposals") < code.index("select_questions(")
 
     def test_coverage_never_edits_a_question(self):
         """Only removal and reordering. The text a patient sees is unchanged."""

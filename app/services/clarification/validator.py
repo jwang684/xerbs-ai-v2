@@ -38,8 +38,9 @@ a valid diagnosis.
 
 from __future__ import annotations
 
+import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
 # At most this many adaptive questions reach a patient in one turn. The
@@ -89,6 +90,151 @@ PROHIBITED_SUBSTRINGS = (
     "购买", "下单", "purchase", "checkout",
     "内部", "internal", "数据库", "database",
 )
+
+
+# ======================================================================
+# X1D-CLARIFY3: why a proposal was refused
+# ======================================================================
+#
+# CLARIFY2 staging produced a sparse complaint where the model proposed
+# questions and every one of them was rejected. The turn recovered -- the
+# coverage floor supplied two 十问歌 questions -- but nothing recorded which
+# rule had fired, so the cause could not be established from the record.
+#
+# These codes are that record. They are a *report* of the decision the rules
+# below already make, not a new set of rules: every code corresponds to a
+# branch that existed before this phase, in the order it already executed.
+#
+# One rejection yields exactly one primary reason: the first rule to fire.
+# Later rules are not evaluated, exactly as before, so a code names the rule
+# that actually stopped the proposal rather than every rule it might also have
+# failed.
+
+REASON_NOT_AN_OBJECT = "NOT_AN_OBJECT"
+REASON_FIELD_MISSING = "FIELD_MISSING"
+REASON_FIELD_TOO_LONG = "FIELD_TOO_LONG"
+REASON_FIELD_PATTERN = "FIELD_PATTERN"
+REASON_FIELD_AUTHORITY = "FIELD_AUTHORITY"
+REASON_FIELD_ALREADY_KNOWN = "FIELD_ALREADY_KNOWN"
+REASON_FIELD_DUPLICATE = "FIELD_DUPLICATE"
+REASON_QUESTION_MISSING = "QUESTION_MISSING"
+REASON_QUESTION_TOO_LONG = "QUESTION_TOO_LONG"
+REASON_QUESTION_PROHIBITED = "QUESTION_PROHIBITED"
+
+REJECTION_REASONS = (
+    REASON_NOT_AN_OBJECT,
+    REASON_FIELD_MISSING,
+    REASON_FIELD_TOO_LONG,
+    REASON_FIELD_PATTERN,
+    REASON_FIELD_AUTHORITY,
+    REASON_FIELD_ALREADY_KNOWN,
+    REASON_FIELD_DUPLICATE,
+    REASON_QUESTION_MISSING,
+    REASON_QUESTION_TOO_LONG,
+    REASON_QUESTION_PROHIBITED,
+)
+
+# Adjustments the validator makes to a proposal it nonetheless accepts. These
+# are NOT rejections and never were: an unusable control is downgraded to the
+# least powerful one rather than costing the patient a useful question.
+# Recorded because "accepted after being changed" and "accepted as proposed"
+# are different facts, and only one of them suggests a contract problem.
+NORMALISATION_ANSWER_TYPE_DEFAULTED = "ANSWER_TYPE_DEFAULTED"
+NORMALISATION_PRIORITY_DEFAULTED = "PRIORITY_DEFAULTED"
+NORMALISATION_CHOICES_INSUFFICIENT = "CHOICES_INSUFFICIENT_DOWNGRADED"
+NORMALISATION_CHOICES_DROPPED = "CHOICES_DROPPED_NOT_CHOICE_TYPE"
+NORMALISATION_CHOICES_TRUNCATED = "CHOICES_TRUNCATED"
+
+NORMALISATION_CODES = (
+    NORMALISATION_ANSWER_TYPE_DEFAULTED,
+    NORMALISATION_PRIORITY_DEFAULTED,
+    NORMALISATION_CHOICES_INSUFFICIENT,
+    NORMALISATION_CHOICES_DROPPED,
+    NORMALISATION_CHOICES_TRUNCATED,
+)
+
+# How a field identifier may be recorded.
+#
+# A field that passes FIELD_PATTERN is by construction [a-z][a-z0-9_]{1,38}
+# [a-z0-9] -- a machine identifier, not prose, so it is legible in a log and
+# safe there. Anything that failed the pattern is arbitrary model output
+# derived from patient language and is hashed instead, on exactly the
+# KNOWLEDGE1B principle: keep the frequency signal, store none of the content.
+FIELD_FORM_ASCII_SNAKE = "ASCII_SNAKE"
+FIELD_FORM_ASCII_OTHER = "ASCII_OTHER"
+FIELD_FORM_NON_ASCII = "NON_ASCII"
+FIELD_FORM_EMPTY = "EMPTY"
+FIELD_FORM_NOT_A_STRING = "NOT_A_STRING"
+
+
+def classify_field(raw: Any) -> dict:
+    """Describe a field identifier in a form that is safe to record.
+
+    Returns the identifier itself only when it is a valid snake_case key.
+    Anything else is reported by shape and digest, never by value.
+    """
+    if raw is None or isinstance(raw, bool) or not isinstance(raw, str):
+        return {"field_form": FIELD_FORM_NOT_A_STRING, "field": None}
+
+    text = raw.strip()
+    if not text:
+        return {"field_form": FIELD_FORM_EMPTY, "field": None}
+
+    normalised = text.lower().replace("-", "_").replace(" ", "_")
+    if FIELD_PATTERN.match(normalised) and len(normalised) <= MAX_FIELD_CHARS:
+        return {"field_form": FIELD_FORM_ASCII_SNAKE, "field": normalised}
+
+    form = (FIELD_FORM_ASCII_OTHER if text.isascii()
+            else FIELD_FORM_NON_ASCII)
+    return {
+        "field_form": form,
+        "field": None,
+        "field_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+        "field_length": len(text),
+    }
+
+
+@dataclass(frozen=True)
+class ProposalOutcome:
+    """What the validator decided about one proposal, and why.
+
+    ``question`` is the accepted question or None; the accept/reject decision
+    is exactly what it was before CLARIFY3, and the rest is description.
+    """
+
+    index: int
+    accepted: bool
+    reason_code: str | None = None
+    normalisations: tuple[str, ...] = ()
+    field_form: str = FIELD_FORM_NOT_A_STRING
+    field: str | None = None
+    field_hash: str | None = None
+    answer_type: str | None = None
+    question_chars: int = 0
+    question: "ClarificationQuestion | None" = None
+
+    def as_record(self) -> dict:
+        """The safe, machine-readable record of this decision.
+
+        An explicit allowlist. The question text is never included in any
+        form: the reason code, the control type and the length are enough to
+        explain a rejection, and none of them carries what the patient said.
+        """
+        record = {
+            "index": self.index,
+            "accepted": self.accepted,
+            "reason_code": self.reason_code,
+            "field_form": self.field_form,
+            "answer_type": self.answer_type,
+            "question_chars": self.question_chars,
+        }
+        if self.field is not None:
+            record["field"] = self.field
+        if self.field_hash is not None:
+            record["field_hash"] = self.field_hash
+        if self.normalisations:
+            record["normalisations"] = list(self.normalisations)
+        return record
 
 
 @dataclass(frozen=True)
@@ -145,43 +291,123 @@ def _is_prohibited(question: str) -> bool:
     return any(bad in lowered for bad in PROHIBITED_SUBSTRINGS)
 
 
-def validate_proposal(raw: Any, known_fields: Iterable[str] = ()) -> ClarificationQuestion | None:
-    """Validate one proposal. Returns None for anything that does not pass."""
+def _field_rejection(raw_field: Any) -> str | None:
+    """Which field rule rejects this identifier, in the order they execute."""
+    text = _text(raw_field)
+    if not text:
+        return REASON_FIELD_MISSING
+    normalised = text.lower().replace("-", "_").replace(" ", "_")
+    if len(normalised) > MAX_FIELD_CHARS:
+        return REASON_FIELD_TOO_LONG
+    if not FIELD_PATTERN.match(normalised):
+        return REASON_FIELD_PATTERN
+    if normalised in AUTHORITY_FIELDS:
+        return REASON_FIELD_AUTHORITY
+    return None
+
+
+def validate_proposal_detailed(
+    raw: Any,
+    known_fields: Iterable[str] = (),
+    *,
+    index: int = 0,
+    already_known: Iterable[str] | None = None,
+) -> ProposalOutcome:
+    """Validate one proposal and report the decision.
+
+    ``known_fields`` is the set that blocks a proposal, exactly as before.
+    ``already_known`` is the subset of it supplied by the caller rather than
+    accumulated from earlier proposals in this batch, and exists only so a
+    field the deterministic engine already asks about can be told apart from a
+    field this same batch already used. It changes nothing about the decision.
+
+    Defaulting it to None rather than the empty set matters: called on its own
+    there is no batch, so every blocking field came from the caller, and
+    reporting those as in-batch duplicates would be simply wrong.
+    """
     if not isinstance(raw, dict):
-        return None
+        return ProposalOutcome(index=index, accepted=False,
+                               reason_code=REASON_NOT_AN_OBJECT)
 
-    field = _normalise_field(raw.get("field"))
-    if field is None or field in {str(f).lower() for f in known_fields}:
-        return None
+    described = classify_field(raw.get("field"))
+    question_text = _text(raw.get("question"))
+    shape = {
+        "field_form": described["field_form"],
+        "field": described.get("field"),
+        "field_hash": described.get("field_hash"),
+        "question_chars": len(question_text),
+    }
 
-    question = _text(raw.get("question"))
-    if not question or len(question) > MAX_QUESTION_CHARS:
-        return None
-    if _is_prohibited(question):
-        return None
+    reason = _field_rejection(raw.get("field"))
+    if reason is not None:
+        return ProposalOutcome(index=index, accepted=False,
+                               reason_code=reason, **shape)
+
+    field_value = _normalise_field(raw.get("field"))
+    blocked = {str(f).lower() for f in known_fields}
+    if field_value in blocked:
+        prior = {str(f).lower() for f in
+                 (known_fields if already_known is None else already_known)}
+        return ProposalOutcome(
+            index=index, accepted=False,
+            reason_code=(REASON_FIELD_ALREADY_KNOWN if field_value in prior
+                         else REASON_FIELD_DUPLICATE),
+            **shape)
+
+    if not question_text:
+        return ProposalOutcome(index=index, accepted=False,
+                               reason_code=REASON_QUESTION_MISSING, **shape)
+    if len(question_text) > MAX_QUESTION_CHARS:
+        return ProposalOutcome(index=index, accepted=False,
+                               reason_code=REASON_QUESTION_TOO_LONG, **shape)
+    if _is_prohibited(question_text):
+        return ProposalOutcome(index=index, accepted=False,
+                               reason_code=REASON_QUESTION_PROHIBITED, **shape)
+
+    applied: list[str] = []
 
     answer_type = _text(raw.get("answer_type")).lower()
     if answer_type not in ANSWER_TYPES:
         # Unknown control: fall back to the least powerful one rather than
         # dropping a possibly useful question, and never invent a widget.
         answer_type = DEFAULT_ANSWER_TYPE
+        applied.append(NORMALISATION_ANSWER_TYPE_DEFAULTED)
 
     priority = _text(raw.get("priority")).lower()
     if priority not in PRIORITIES:
         priority = DEFAULT_PRIORITY
+        applied.append(NORMALISATION_PRIORITY_DEFAULTED)
 
-    choices = _normalise_choices(raw.get("choices"))
+    offered = raw.get("choices")
+    choices = _normalise_choices(offered)
+    if isinstance(offered, (list, tuple)) and len(offered) > len(choices):
+        applied.append(NORMALISATION_CHOICES_TRUNCATED)
     if answer_type == "single_choice" and len(choices) < 2:
         # A choice control with nothing to choose between is not usable.
         answer_type = DEFAULT_ANSWER_TYPE
         choices = ()
+        applied.append(NORMALISATION_CHOICES_INSUFFICIENT)
     if answer_type != "single_choice":
+        if choices:
+            applied.append(NORMALISATION_CHOICES_DROPPED)
         choices = ()
 
-    return ClarificationQuestion(
-        field=field, question=question, answer_type=answer_type,
-        priority=priority, choices=choices,
-    )
+    shape["answer_type"] = answer_type
+    return ProposalOutcome(
+        index=index, accepted=True, normalisations=tuple(applied),
+        question=ClarificationQuestion(
+            field=field_value, question=question_text,
+            answer_type=answer_type, priority=priority, choices=choices),
+        **shape)
+
+
+def validate_proposal(raw: Any, known_fields: Iterable[str] = ()) -> ClarificationQuestion | None:
+    """Validate one proposal. Returns None for anything that does not pass.
+
+    Expressed on top of validate_proposal_detailed so there is one decision
+    procedure rather than two that could drift apart.
+    """
+    return validate_proposal_detailed(raw, known_fields).question
 
 
 def validate_proposals(
@@ -198,21 +424,64 @@ def validate_proposals(
     if not isinstance(raw, (list, tuple)):
         return []
 
-    seen: set[str] = {str(f).lower() for f in known_fields}
-    accepted: list[ClarificationQuestion] = []
-    for index, item in enumerate(raw):
-        question = validate_proposal(item, known_fields=seen)
-        if question is None:
-            continue
-        seen.add(question.field)
-        accepted.append(question)
+    return [outcome.question
+            for outcome in validate_proposals_detailed(
+                raw, known_fields=known_fields, limit=limit)
+            if outcome.accepted]
 
+
+def validate_proposals_detailed(
+    raw: Any,
+    known_fields: Iterable[str] = (),
+    limit: int = MAX_PROPOSALS_PER_TURN,
+) -> list[ProposalOutcome]:
+    """Validate a batch and report every decision, accepted and refused.
+
+    The accepted outcomes come back in the same order validate_proposals
+    produces, and the refused ones follow in proposal order. A proposal
+    dropped by the ``limit`` is reported as accepted-but-not-returned by being
+    absent from the accepted prefix, which keeps this function a description
+    of the existing behaviour rather than a second policy.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    supplied = {str(f).lower() for f in known_fields}
+    seen: set[str] = set(supplied)
+    outcomes: list[ProposalOutcome] = []
+    for index, item in enumerate(raw):
+        outcome = validate_proposal_detailed(
+            item, known_fields=seen, index=index, already_known=supplied)
+        if outcome.accepted and outcome.question is not None:
+            seen.add(outcome.question.field)
+        outcomes.append(outcome)
+
+    accepted = [o for o in outcomes if o.accepted]
     rank = {"high": 0, "medium": 1, "low": 2}
     ordered = sorted(
         enumerate(accepted),
-        key=lambda pair: (rank.get(pair[1].priority, 1), pair[0]),
+        key=lambda pair: (rank.get(pair[1].question.priority, 1), pair[0]),
     )
-    return [q for _, q in ordered][:max(0, limit)]
+    kept = [o for _, o in ordered][:max(0, limit)]
+    return kept + [o for o in outcomes if not o.accepted]
+
+
+def summarise_outcomes(outcomes: Sequence[ProposalOutcome]) -> dict:
+    """Counts only. Safe to put in a flag or a log line."""
+    reasons: dict[str, int] = {}
+    normalisations: dict[str, int] = {}
+    for outcome in outcomes:
+        if outcome.reason_code:
+            reasons[outcome.reason_code] = reasons.get(outcome.reason_code, 0) + 1
+        for code in outcome.normalisations:
+            normalisations[code] = normalisations.get(code, 0) + 1
+    return {
+        "proposed": len(outcomes),
+        "accepted": sum(1 for o in outcomes if o.accepted),
+        "rejected": sum(1 for o in outcomes if not o.accepted),
+        "reason_counts": dict(sorted(reasons.items())),
+        "normalisation_counts": dict(sorted(normalisations.items())),
+    }
 
 
 def describe_policy() -> dict:
@@ -222,4 +491,8 @@ def describe_policy() -> dict:
         "max_question_chars": MAX_QUESTION_CHARS,
         "answer_types": list(ANSWER_TYPES),
         "priorities": list(PRIORITIES),
+        "max_field_chars": MAX_FIELD_CHARS,
+        "field_pattern": FIELD_PATTERN.pattern,
+        "rejection_reasons": list(REJECTION_REASONS),
+        "normalisation_codes": list(NORMALISATION_CODES),
     }

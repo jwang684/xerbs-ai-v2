@@ -133,6 +133,11 @@ clarification_proposals rules:
 - never request credentials, payment details, identifiers, dosage decisions,
   purchase decisions, or system information
 - do not explain your reasoning; the field name is the only justification
+- "field" must be an ASCII snake_case English identifier of 3-40 characters,
+  lower-case letters, digits and underscores only, for example sputum_colour
+  or aversion_to_cold. Never Chinese characters, never spaces or punctuation.
+  Only the identifier is English; the question text stays in the patient's
+  language
 - omit the key entirely if nothing is worth asking
 
 If data are insufficient:
@@ -349,6 +354,8 @@ class OpenAICompatibleProvider(LLMProvider):
         raw_proposals = data.get("clarification_proposals")
         if not isinstance(raw_proposals, list):
             raw_proposals = []
+        well_formed = [p for p in raw_proposals if isinstance(p, dict)]
+        discarded_proposals = len(raw_proposals) - len(well_formed)
 
         pattern_hypotheses = data.get("pattern_hypotheses", [])
         formula_candidates = data.get("formula_candidates", [])
@@ -392,6 +399,7 @@ class OpenAICompatibleProvider(LLMProvider):
             model=self.model,
             usage=usage,
             provider_latency_ms=provider_latency_ms,
-            clarification_proposals=[p for p in raw_proposals if isinstance(p, dict)],
+            clarification_proposals=well_formed,
+            clarification_proposals_discarded=discarded_proposals,
             clinical_reasoning=raw_reasoning,
         )
