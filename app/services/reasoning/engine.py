@@ -1,6 +1,7 @@
 from app.schemas.intake import RecommendationRequest
 from app.schemas.reasoning import StructuredSymptom, MissingInformation, PatternAssessment, EvidenceItem, ReasoningResponse
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
+from app.services.knowledge.resolver import KnowledgeResolver
 from app.services.reasoning.contradictions import ContradictionEngine
 
 CORE_FIELDS = [
@@ -12,8 +13,12 @@ CORE_FIELDS = [
 ]
 
 class DiagnosticReasoningEngine:
-    def __init__(self, corpus=None):
+    def __init__(self, corpus=None, resolver=None):
         self.corpus = corpus or PersistentClinicalStore()
+        # X1D-KNOWLEDGE1B: the pattern lookup goes through the resolver seam.
+        # It delegates to the same corpus search and returns the same value;
+        # the only addition is that a miss is recorded instead of vanishing.
+        self.resolver = resolver or KnowledgeResolver(self.corpus)
         self.contradictions = ContradictionEngine()
 
     def analyze(self, request: RecommendationRequest, model_patterns: list[dict] | None = None) -> ReasoningResponse:
@@ -40,7 +45,7 @@ class DiagnosticReasoningEngine:
         for p in model_patterns or []:
             name=str(p.get("name","")).strip()
             if not name: continue
-            matches=self.corpus.search(name,["pattern"],reviewed_only=True,limit=3)
+            matches=self.resolver.search(name,["pattern"],reviewed_only=True,limit=3)
             support=[]
             reasoning=str(p.get("reasoning","")).strip()
             if reasoning: support.append(EvidenceItem(text=reasoning,source="model_reasoning"))
