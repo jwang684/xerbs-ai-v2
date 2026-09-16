@@ -246,9 +246,19 @@ def _validate_discriminator(entry: Any, live: set) -> Optional[Dict[str, Any]]:
     # The counterfactual has to point somewhere, and somewhere DIFFERENT.
     demonstrated = bool(present and absent and set(present) != set(absent))
 
+    # X1D-LEGACYDIAG4.6: the other domains that would settle the same pair.
+    # Named by the model, canonicalized here, and never extended by us -- the
+    # deterministic layer orders what it is given and invents nothing.
+    alternatives = []
+    for extra in (entry.get("also_resolved_by") or [])[:MAX_DISCRIMINATORS * 2]:
+        candidate = normalize_clinical_domain(extra)
+        if candidate and candidate != domain and candidate not in alternatives:
+            alternatives.append(candidate)
+
     return {
         "domain": domain,
         "separates": separates,
+        "also_resolved_by": alternatives,
         "if_present_supports": present,
         "if_absent_supports": absent,
         "discriminating": demonstrated,
@@ -481,6 +491,23 @@ def differential_required_domains(
 
     This set does not rank anything and grants no score. It answers one
     question: would an answer here help tell the live readings apart?
+
+    X1D-LEGACYDIAG4.6. Eligibility is the whole of what this decides. Which of
+    these domains is actually put to the patient is settled downstream, and it
+    is worth naming the real path because an earlier version of this docstring
+    named a function that production never calls:
+
+      1. governed_question_candidates() drops the domains that are no longer
+         askable -- anything whose coverage state is not UNKNOWN or PARTIAL --
+         and attaches the governed default question to those that remain;
+      2. select_questions() scores every candidate on the existing CLARIFY
+         weights and splits them into the two R2 tiers;
+      3. order_within_tier() orders the differential tier by
+      4. preference_rank(), which is deterministic and mentions no pattern, no
+         complaint and no domain by name.
+
+    Final selection stays bounded by the existing adaptive budget and the
+    existing scoring path. Nothing here raises a score or buys a slot.
     """
     live = live_hypotheses(state)
     if not live:
@@ -500,6 +527,14 @@ def differential_required_domains(
             domain = normalize_clinical_domain(entry.get("domain"))
             if domain:
                 required.add(domain)
+            # 4.6: the alternatives are equally able to settle the same
+            # competition, so they are equally eligible. Which one is actually
+            # asked is decided downstream by preference_rank, reached through
+            # governed_question_candidates and select_questions -- not here.
+            for extra in entry.get("also_resolved_by") or []:
+                candidate = normalize_clinical_domain(extra)
+                if candidate:
+                    required.add(candidate)
 
     for gap in (state.evidence_gaps if state else []):
         if not isinstance(gap, dict):
@@ -512,6 +547,76 @@ def differential_required_domains(
         if domain:
             required.add(domain)
     return required
+
+
+# ======================================================================
+# Which competition, and what could settle it
+# ======================================================================
+#
+# X1D-LEGACYDIAG4.6. The 4.5 acceptance measured a clean split: which
+# COMPETITION each branch was in separated perfectly (within 0.65, between
+# 0.00), while which DOMAIN it picked to settle that competition did not
+# reproduce (within 0.333, between 0.340). Several findings separate the same
+# two readings about equally well, and nothing preferred one consistently.
+#
+# So the two decisions are pulled apart. The model says what competition it is
+# in and which domains could resolve it -- both clinical judgements. Which of
+# those gets one of three slots is decided deterministically, by rules that
+# mention no pattern, no complaint and no domain by name.
+#
+# NON-PRODUCTION SECTION. Both functions below are diagnostic and test helpers
+# with no caller in app/. Production reads the flat eligible set from
+# differential_required_domains and never groups by competition: a domain is
+# eligible because some live pair needs it, and which eligible domain is asked
+# is decided by preference_rank. The grouping here exists so a competition can
+# be INSPECTED -- which readings are actually in contention this turn, and what
+# would settle each -- and so a future phase that wants to spread scarce slots
+# ACROSS competitions has the shape it would need. Nothing today reads it.
+#
+# Keeping them costs nothing and deleting them would discard the only
+# expression of competition identity in the codebase. Wiring them in is a
+# design change and belongs to whichever phase decides to make it, not here.
+
+
+def competition_key(names: Any) -> Tuple[str, ...]:
+    """Identity of one competition: its participants, order-independent.
+
+    A-vs-B and B-vs-A are the same question about the same patient, so they
+    must hash the same. Internal reasoning identity only -- it confers no
+    clinical authority and never reaches a patient.
+    """
+    if not isinstance(names, (list, tuple, set)):
+        return ()
+    cleaned = {str(n).strip() for n in names if str(n or "").strip()}
+    return tuple(sorted(cleaned))
+
+
+def competitions(state: Optional[WorkingDifferentialState]) -> Dict[Tuple[str, ...], set]:
+    """Every live competition in this state, and the domains that could settle it.
+
+    Only validated discriminators contribute, so every entry has already
+    survived the 4.5 rules: a real live pair, and a counterfactual showing the
+    two answers would move things differently.
+    """
+    live = {h.pattern_name for h in live_hypotheses(state)}
+    found: Dict[Tuple[str, ...], set] = {}
+    if not live:
+        return found
+    for hypothesis in live_hypotheses(state):
+        for entry in hypothesis.unresolved_discriminators:
+            if not isinstance(entry, dict) or not entry.get("discriminating"):
+                continue
+            key = competition_key(entry.get("separates"))
+            if len(key) < 2 or not set(key) <= live:
+                continue
+            domain = normalize_clinical_domain(entry.get("domain"))
+            if domain:
+                found.setdefault(key, set()).add(domain)
+            for extra in (entry.get("also_resolved_by") or []):
+                candidate = normalize_clinical_domain(extra)
+                if candidate:
+                    found.setdefault(key, set()).add(candidate)
+    return found
 
 
 def describe_policy() -> Dict[str, Any]:

@@ -624,6 +624,74 @@ class DifferentialSignals:
         return bool(self.contradiction_domains)
 
 
+# X1D-LEGACYDIAG4.6: a stable order among domains that resolve the same
+# competition equally well.
+#
+# Three criteria, in order, and every one is a property of the INTERVIEW
+# rather than of any illness. A rule that mentioned a pattern would work only
+# for the competition someone thought of while writing it.
+#
+#   1. a domain the record has not touched at all beats one it has half
+#      touched. PARTIAL means the patient said something adjacent, so the
+#      question has to be phrased around what they already said and the answer
+#      is harder to read;
+#   2. a domain that can be answered from a short fixed list beats one that
+#      cannot. Bounded answers cost the patient less and arrive unambiguous;
+#   3. canonical registry order. Documented, stable, and deliberately
+#      arbitrary -- when two domains are genuinely equivalent under 1 and 2,
+#      inventing a number to separate them would be false precision.
+DOMAIN_ORDER: Dict[str, int] = {d.key: i for i, d in enumerate(DOMAINS)}
+
+
+def preference_rank(domain: str,
+                    coverage: "CoverageAssessment") -> Tuple[int, int, int]:
+    """Sort key for one domain. Lower sorts first. Total and deterministic.
+
+    ORDERING ONLY, over domains that are already known to be askable. It does
+    not decide askability and must not be read as doing so: the first element
+    separates PARTIAL from everything else, so a KNOWN domain sorts as though
+    untouched and would come out FIRST. That is not a defect to fix here --
+    filtering belongs upstream, in governed_question_candidates, which admits
+    only UNKNOWN and PARTIAL. Teaching this key about every coverage state
+    would put the same decision in two places.
+    """
+    state = coverage.states.get(domain) if coverage is not None else None
+    untouched = 0 if state != PARTIAL else 1
+    entry = DOMAINS_BY_KEY.get(domain)
+    bounded = 0 if (entry is not None and entry.default_choices) else 1
+    return (untouched, bounded, DOMAIN_ORDER.get(domain, len(DOMAIN_ORDER)))
+
+
+def order_discriminators(domains: Iterable[str],
+                         coverage: "CoverageAssessment") -> List[str]:
+    """Valid domains for one competition, in the order they should be asked.
+
+    NON-PRODUCTION. Diagnostic and test helper only; no caller in app/. The
+    production path reaches the same ordering through select_questions ->
+    order_within_tier -> preference_rank, which is where the tiering and the
+    budget live.
+
+    X1D-LEGACYDIAG4.6 Phase 0 established the reason this is not a drop-in
+    production selector: it assumes its input has ALREADY been filtered to
+    askable domains. It does not consult coverage for askability, and
+    preference_rank ranks a KNOWN domain as though untouched, so feeding it a
+    raw required-domain set can put an already-answered domain first and ask
+    the patient something they have answered. Production is safe because
+    governed_question_candidates excludes every state outside UNKNOWN/PARTIAL
+    before anything is ranked.
+
+    No guard is added here for that. A runtime branch existing only to protect
+    a helper nothing calls would be untested weight, and the invariant that
+    actually matters is pinned on the production path instead -- see
+    tests/test_x1d_legacydiag46_preference.py, TestKnownDomainIsNeverReAsked.
+
+    Ordering only. Nothing is added, nothing is diagnosed, and a domain the
+    model did not name never appears.
+    """
+    unique = {d for d in (domains or []) if d in DOMAINS_BY_KEY}
+    return sorted(unique, key=lambda d: preference_rank(d, coverage))
+
+
 def signals_from_domains(
     gap_domains: Any,
     hypothesis_domains: Any,
@@ -785,6 +853,51 @@ class SelectionResult:
         return len(self.fallback)
 
 
+def governed_question_candidates(
+    domains: Iterable[str],
+    coverage: CoverageAssessment,
+    already: Iterable[Optional[str]] = (),
+) -> List[Candidate]:
+    """The canonical question for each domain, for domains nobody wrote one for.
+
+    X1D-LEGACYDIAG4.6. The model names every domain that could settle its
+    competition but writes a question for only the one or two it chose, so
+    without this the deterministic ordering has nothing to choose between --
+    a candidate with no question cannot be asked however well it ranks.
+
+    These are the same governed default questions the coverage floor has always
+    used, built the same way. Nothing new is generated and no domain appears
+    that the model did not name.
+    """
+    taken = {d for d in already if d}
+    out: List[Candidate] = []
+    for key in sorted({d for d in (domains or []) if d}):
+        if key in taken:
+            continue
+        if coverage.states.get(key) not in (UNKNOWN, PARTIAL):
+            continue
+        domain = DOMAINS_BY_KEY.get(key)
+        if domain is None or not domain.default_question:
+            continue
+        out.append(Candidate(
+            field=key,
+            question=domain.default_question,
+            domain=key,
+            kind="adaptive",
+            domain_certain=True,
+            payload={
+                "field": key,
+                "question": domain.default_question,
+                "answer_type": ("single_choice" if domain.default_choices
+                                else "short_text"),
+                "choices": list(domain.default_choices),
+                "priority": "medium",
+                "source": "xerbs-ai-v2-coverage",
+            },
+        ))
+    return out
+
+
 def coverage_fallback(coverage: CoverageAssessment,
                       already_covered: Sequence[Optional[str]]) -> List[Candidate]:
     """Legacy 十问歌 default questions for material domains still unspoken.
@@ -897,9 +1010,22 @@ def select_questions(
     def tier(scored_candidate):
         return 0 if scored_candidate.candidate.domain in required else 1
 
+    def order_within_tier(scored_candidate):
+        """X1D-LEGACYDIAG4.6: stable order among equally valid discriminators.
+
+        Inside the differential tier the preference decides, because several
+        domains often settle the same competition equally well and score alike;
+        4.5 measured the result, which was that repeated runs of one branch
+        picked different ones. Outside that tier nothing changes, and no score
+        is altered anywhere -- this orders candidates, it does not weigh them.
+        """
+        if tier(scored_candidate) != 0:
+            return (1, 1, 0)
+        return preference_rank(scored_candidate.candidate.domain, coverage)
+
     kept_adaptive = sorted(
         enumerate(adaptive_scored),
-        key=lambda pair: (tier(pair[1]),
+        key=lambda pair: (tier(pair[1]), order_within_tier(pair[1]),
                           -pair[1].score, pair[0]))[:max(0, adaptive_budget)]
     allowed_adaptive = {id(s.candidate) for _, s in kept_adaptive}
 

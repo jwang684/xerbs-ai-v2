@@ -10,6 +10,7 @@ from app.services.recommendation.assembler import RecommendationAssembler
 from app.services.llm.provider import LLMProvider
 from app.services.telemetry.provider_usage import record_provider_usage
 from app.services.telemetry.clarification_rejection import record_rejections
+from app.services.telemetry.differential_pipeline import emit as record_differential_pipeline
 
 class IdempotencyConflictError(ValueError): pass
 class GenerationNotFoundError(ValueError): pass
@@ -65,6 +66,8 @@ class Base44GenerationService:
                 intake, on_provider_result=lambda r: captured.__setitem__("result", r),
                 on_clarification_outcomes=lambda o, d: captured.__setitem__(
                     "clarification", (o, d)),
+                on_differential_pipeline=lambda d: captured.__setitem__(
+                    "differential", d),
                 on_display_text=on_display_text)
             generation_latency_ms=(time.monotonic()-started)*1000.0
             with self.Session.begin() as s:
@@ -89,6 +92,16 @@ class Base44GenerationService:
                     correlation_id=row_correlation_id,
                     outcomes=outcomes,
                     malformed_count=discarded,
+                )
+            if "differential" in captured:
+                # X1D-LEGACYDIAG4.6-R1: where the working differential stopped
+                # being one. Same position as the rejection record -- after the
+                # clinical result is safely persisted -- so a diagnostic can
+                # never cost a valid diagnosis.
+                record_differential_pipeline(
+                    generation_id=generation_id,
+                    correlation_id=row_correlation_id,
+                    **captured["differential"],
                 )
             return response
         except Exception as exc:

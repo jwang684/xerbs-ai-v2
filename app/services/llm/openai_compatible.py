@@ -198,6 +198,8 @@ Required JSON object:
           {
             "domain": "one of the allowed domain names",
             "separates": ["a pattern_name above", "another pattern_name above"],
+            "also_resolved_by": ["any OTHER allowed domains that would settle
+                                  this same pair equally well"],
             "if_present_supports": ["which of those a POSITIVE answer favours"],
             "if_absent_supports": ["which of those a NEGATIVE answer favours"],
             "rationale": "one short line on why this answer would move things"
@@ -297,7 +299,12 @@ working_differential rules:
       and it will not earn a question slot
     * this is a demonstration, not a formality: it is how you show that asking
       would actually change your mind
-- the names you write in separates, if_present_supports and
+    * list in "also_resolved_by" every OTHER allowed domain that would settle
+      the same pair about as well. Name them even though you are not asking
+      about them: which of the candidates is actually put to the patient is
+      decided after you, and it is decided better when it can see all of them.
+      Leave it empty only when nothing else would genuinely do
+- the names you write in separates, also_resolved_by, if_present_supports and
   if_absent_supports must be copied EXACTLY from your own pattern_name values
   above. Not a paraphrase, not a translation, not a near-synonym, and never a
   reading you did not list. A name that is not one of yours describes a

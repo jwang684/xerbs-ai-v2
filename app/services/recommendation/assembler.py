@@ -35,10 +35,14 @@ from app.services.interview.mode import (
 from app.services.telemetry.clarification_rejection import outcome_flags
 from app.services.clarification.coverage import (
     KNOWN,
+    MIN_ADAPTIVE_SCORE,
     Candidate,
     assess_coverage,
+    governed_question_candidates,
     extract_differential_signals,
+    preference_rank,
     resolve_domain,
+    score_candidate,
     select_questions,
 )
 
@@ -77,6 +81,7 @@ class RecommendationAssembler:
         request: RecommendationRequest,
         on_provider_result=None,
         on_clarification_outcomes=None,
+        on_differential_pipeline=None,
         on_display_text=None,
     ) -> RecommendationResponse:
         """on_provider_result is an X1D-TELEMETRY1 observer.
@@ -112,6 +117,20 @@ class RecommendationAssembler:
             supports_interview=provider_supports_interview(self.provider),
         )
         interview_mode = mode == INTERVIEW
+
+        # X1D-LEGACYDIAG4.6-R1: diagnostic-only locals. Initialised here so
+        # the observer can report a turn that never reached the interview
+        # branch at all. Read-only downstream; nothing clinical consults them.
+        diag_raw = None
+        diag_validated = None
+        diag_notes: list = []
+        diag_required: set = set()
+        diag_governed: set = set()
+        diag_adaptive_total = 0
+        diag_adaptive_budget = 0
+        diag_selected: set = set()
+        diag_candidates: list = []
+        diag_suppressed: set = set()
 
         # X1D-LEGACYDIAG4.4B: the carried differential reaches the INTERVIEW
         # contract and only that one.
@@ -234,6 +253,11 @@ class RecommendationAssembler:
                 validated, notes = validate_state(
                     (result.interview or {}).get("working_differential"),
                     evidence, prior)
+                # X1D-LEGACYDIAG4.6-R1: copies for the observer below. Written
+                # after the clinical call, never read back by it, so no
+                # diagnostic name can reach a decision.
+                diag_raw = (result.interview or {}).get("working_differential")
+                diag_validated, diag_notes = validated, list(notes)
                 if validated is not None:
                     reasoning.working_differential = validated.model_dump(
                         mode="json")
@@ -356,6 +380,7 @@ class RecommendationAssembler:
                 else set())
             eligible_domains = required_domains | set(
                 signals.contradiction_domains)
+            diag_required = set(required_domains)
             coverage = assess_coverage(accumulated_text, eligible_domains)
 
             # The reasoning engine appends to missing_information and
@@ -395,6 +420,33 @@ class RecommendationAssembler:
                     payload=question,
                 ))
 
+            # X1D-LEGACYDIAG4.6: give the ordering something to order.
+            #
+            # The model names every domain that could settle its competition
+            # and writes a question for only the one or two it picked, so the
+            # rest arrive unaskable. These are the same governed default
+            # questions the coverage floor already uses, for domains the model
+            # itself named -- so the deterministic preference decides which
+            # candidate is put to the patient instead of the model's own
+            # run-to-run choice deciding it.
+            try:
+                adaptive_candidates = adaptive_candidates + \
+                    governed_question_candidates(
+                        required_domains, coverage,
+                        [c.domain for c in adaptive_candidates])
+            except Exception:  # noqa: BLE001 - a ranking aid never breaks a turn
+                uncertainty_flags.append("DIFFERENTIAL_CANDIDATES_UNAVAILABLE")
+
+            diag_governed = {c.domain for c in adaptive_candidates
+                             if c.domain in diag_required}
+            diag_adaptive_total = len(adaptive_candidates)
+            # X1D-LEGACYDIAG4.6-R2: domains for which no governed candidate was
+            # generated because a model proposal already occupied them.
+            diag_suppressed = {c.domain for c in adaptive_candidates
+                               if c.kind == "adaptive"
+                               and c.domain in diag_required
+                               and not isinstance(c.payload, dict)}
+
             selection = select_questions(
                 deterministic=deterministic_candidates,
                 adaptive=adaptive_candidates,
@@ -402,6 +454,38 @@ class RecommendationAssembler:
                 signals=signals,
                 differential_domains=required_domains,
             )
+
+            diag_adaptive_budget = selection.adaptive_budget
+            diag_selected = {sc.candidate.domain for sc in selection.scores
+                             if sc.candidate.kind == "adaptive"
+                             and sc.candidate.domain}
+
+            # X1D-LEGACYDIAG4.6-R2: one row per adaptive candidate, rebuilt
+            # from pure functions over inputs this turn already used. Nothing
+            # is re-decided; score_candidate and preference_rank have no side
+            # effects, and the result is thrown away after it is logged.
+            try:
+                for candidate in adaptive_candidates:
+                    scored = score_candidate(candidate, coverage, signals)
+                    value = None if scored is None else round(scored.score, 1)
+                    diag_candidates.append({
+                        "source": ("coverage"
+                                   if isinstance(candidate.payload, dict)
+                                   and candidate.payload.get("source")
+                                   else "model"),
+                        "domain": candidate.domain,
+                        "domain_certain": bool(candidate.domain_certain),
+                        "tier": (0 if candidate.domain in diag_required else 1),
+                        "preference_rank": (
+                            list(preference_rank(candidate.domain, coverage))
+                            if candidate.domain else None),
+                        "score": value,
+                        "above_floor": bool(
+                            value is not None and value >= MIN_ADAPTIVE_SCORE),
+                        "selected": candidate.domain in diag_selected,
+                    })
+            except Exception:  # noqa: BLE001 - a diagnostic never breaks a turn
+                diag_candidates = []
 
             if paired:
                 reasoning.followup_questions = list(selection.deterministic)
@@ -457,6 +541,28 @@ class RecommendationAssembler:
                 on_clarification_outcomes(
                     proposal_outcomes,
                     result.clarification_proposals_discarded)
+            except Exception:  # noqa: BLE001 - observability is never fatal
+                pass
+
+        if on_differential_pipeline is not None:
+            # X1D-LEGACYDIAG4.6-R1. Same observer contract again: side effect
+            # only, return value ignored, failure contained. Every value below
+            # was already computed by this turn; nothing is recalculated and
+            # nothing is written back, so the questions this turn selected are
+            # the same whether or not anyone is listening.
+            try:
+                on_differential_pipeline({
+                    "raw_state": diag_raw,
+                    "validated": diag_validated,
+                    "notes": diag_notes,
+                    "required_domains": sorted(diag_required),
+                    "governed_domains": sorted(diag_governed),
+                    "adaptive_total": diag_adaptive_total,
+                    "adaptive_budget": diag_adaptive_budget,
+                    "selected_domains": sorted(diag_selected),
+                    "candidates": diag_candidates,
+                    "suppressed_by_already": sorted(diag_suppressed),
+                })
             except Exception:  # noqa: BLE001 - observability is never fatal
                 pass
 
