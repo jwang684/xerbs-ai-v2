@@ -39,7 +39,7 @@ class DiagnosticReasoningEngine:
         joined=" ".join([text,*request.symptoms])
         for field,reason,q in CORE_FIELDS:
             if not any(x in joined for x in markers[field]):
-                missing.append(MissingInformation(field=field,reason=reason,priority="HIGH" if field in {"duration","temperature"} else "MEDIUM")); questions.append(q)
+                missing.append(MissingInformation(field=field,reason=reason,question=q,priority="HIGH" if field in {"duration","temperature"} else "MEDIUM")); questions.append(q)
 
         assessments=[]
         for p in model_patterns or []:

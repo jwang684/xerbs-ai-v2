@@ -22,6 +22,17 @@ class MissingInformation(BaseModel):
     field: str
     reason: str
     priority: str = "MEDIUM"
+    # X1D-LEGACYDIAG4.4B-R2: the question this item was raised as.
+    #
+    # core's adapter has always keyed its field lookup on this
+    # (missing_information[].question -> field) and this schema has never
+    # carried it, so the lookup could not match and every deterministic
+    # question reached the browser with field=None. The R1 fork measured the
+    # consequence: a patient answering 睡眠/大便 contributed nothing to the
+    # structured answer channel, because an answer with no field identity has
+    # no provenance to record. The field was known here all along -- it just
+    # never travelled.
+    question: str | None = None
 
 class ConvergenceMetrics(BaseModel):
     score: float = Field(ge=0, le=1)
@@ -83,6 +94,10 @@ class ReasoningResponse(BaseModel):
     # consumer_projection.build_consumer_reasoning; a field absent from that
     # allowlist cannot appear here by being forgotten.
     consumer_reasoning: dict = Field(default_factory=dict)
+    # X1D-LEGACYDIAG4.4B: the VALIDATED working differential, for core to
+    # persist and hand back next turn. Internal: it is never projected to a
+    # patient and never read by any governance step.
+    working_differential: dict = Field(default_factory=dict)
 
 
 # ======================================================================
@@ -224,6 +239,10 @@ class InterviewReasoning(BaseModel):
     # Advisory only. Deterministic governance decides whether a case may
     # proceed; the model never gets to declare a case finished.
     information_sufficient: bool = False
+    # X1D-LEGACYDIAG4.4B: the raw working differential as the model returned
+    # it. Raw on purpose -- it is validated before anything uses or stores it,
+    # and keeping the unvalidated form separate makes that boundary visible.
+    working_differential: dict = Field(default_factory=dict)
 
     @property
     def pattern_hypotheses(self) -> list[InterviewHypothesis]:
@@ -236,3 +255,87 @@ class InterviewReasoning(BaseModel):
     def is_empty(self) -> bool:
         return not any([self.interview_summary, self.working_hypotheses,
                         self.missing_information])
+
+
+# ======================================================================
+# X1D-LEGACYDIAG4.4B: the working differential carried between turns
+# ======================================================================
+#
+# Not a diagnosis and not a record. A set of candidate readings with the
+# patient evidence for and against each, carried so the next turn can ask the
+# question that separates them rather than re-deriving from scratch.
+#
+# Two things are deliberately absent. There is no confidence number: a score
+# that survives turns is a score that drifts upward, and ordinal standing is
+# enough to rank a question. And evidence is a REFERENCE, never text -- the
+# model may cite what the patient said, and cannot state it. That is what stops
+# "yellow tongue coating" being invented on turn one and treated as history on
+# turn two.
+
+
+class EvidenceRef(BaseModel):
+    """A pointer at something the patient supplied.
+
+    origin is closed on purpose. MODEL_TEXT, SUMMARY, HYPOTHESIS, IMAGE and
+    INFERRED_FINDING are not options, so a model cannot cite itself, and it
+    cannot cite a tongue photograph the governed path has never transmitted.
+    """
+
+    origin: Literal["COMPLAINT", "OBSERVATION", "ANSWER"]
+    # OBSERVATION: the structured field the patient filled in.
+    field: str | None = None
+    # ANSWER: the question that was asked, and the turn it was asked on.
+    question_field: str | None = None
+    turn_id: int | None = None
+
+
+class ResolvableEvidence(BaseModel):
+    """What this case can substantiate, supplied by core from governed history.
+
+    ``answers`` entries are shaped
+    ``{turn_id, question_field, domain, answer}``. The answer VALUE is carried
+    and the question WORDING is not, which is the provenance rule R1 exists to
+    enforce: a model-written interrogative must never become a patient fact,
+    so only what the patient supplied travels, under the identity of the
+    question it was given for.
+    """
+
+    has_complaint: bool = True
+    observations: list[str] = Field(default_factory=list)
+    answers: list[dict] = Field(default_factory=list)
+
+
+class WorkingHypothesis(BaseModel):
+    """One candidate reading, with what argues for and against it."""
+
+    pattern_name: str
+    # Ordinal, not numeric. RULED_OUT_FOR_NOW is reversible by design: this is
+    # an interview state, and a later answer may bring a reading back.
+    standing: Literal["PRIMARY_WORKING", "PLAUSIBLE", "WEAKENED",
+                      "RULED_OUT_FOR_NOW"] = "PLAUSIBLE"
+    supporting_evidence: list[EvidenceRef] = Field(default_factory=list)
+    contradicting_evidence: list[EvidenceRef] = Field(default_factory=list)
+    unresolved_discriminators: list[dict] = Field(default_factory=list)
+
+
+class WorkingDifferentialState(BaseModel):
+    """The whole carried state. Internal; never shown to a patient."""
+
+    turn_id: int | None = None
+    hypotheses: list[WorkingHypothesis] = Field(default_factory=list)
+    evidence_gaps: list[dict] = Field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not self.hypotheses
+
+
+class InterviewCarryState(BaseModel):
+    """What core hands ai-v2 at the start of an interview turn.
+
+    Carries the previous state AND the list of things that may be cited. They
+    travel together because validating one without the other is impossible.
+    """
+
+    prior: WorkingDifferentialState | None = None
+    resolvable_evidence: ResolvableEvidence = Field(
+        default_factory=ResolvableEvidence)

@@ -68,8 +68,11 @@ from app.services.telemetry import provider_usage
 
 
 SPARSE = "咳嗽发热3天。"
+# X1D-LEGACYDIAG4.4B-R1 gave 鼻/咽/痰 canonical domains and made them material
+# to a respiratory complaint, so a text meant to read as "coverage is already
+# complete" has to state them too. 痰 was already here; 鼻 and 咽 are not.
 RICH = ("发热3天，怕冷无汗，咳嗽有白痰，口不渴，食欲正常，大便正常，"
-        "睡眠可，头身酸痛，胸不闷，受凉后起病。")
+        "睡眠可，头身酸痛，胸不闷，受凉后起病，无鼻塞流涕，无咽痛咽痒。")
 
 
 def missing(*priorities):
@@ -192,10 +195,17 @@ class TestScenarioBF_NoAuthority:
         assert field not in InterviewReasoning.model_fields
         assert field not in InterviewHypothesis.model_fields
 
-    def test_b2_the_schema_surface_is_exactly_four_fields(self):
+    def test_b2_the_schema_surface_is_exactly_the_approved_fields(self):
+        """X1D-LEGACYDIAG4.4B added working_differential -- the carried state.
+
+        The set stays closed and exhaustively asserted; this names the one
+        addition rather than loosening the check. It is still not a
+        ClinicalReasoningEnvelope: the forbidden-field parametrisation below
+        covers the new field too.
+        """
         assert set(InterviewReasoning.model_fields) == {
             "interview_summary", "working_hypotheses", "missing_information",
-            "information_sufficient"}
+            "information_sufficient", "working_differential"}
 
     @pytest.mark.parametrize("field", FORBIDDEN_FIELDS)
     def test_b3_the_interview_prompt_never_asks_for_it(self, field):
@@ -321,8 +331,15 @@ class TestScenarioGI_ClarificationGovernanceIntact:
         assert "Two good questions beat four" in oc.INTERVIEW_SYSTEM_PROMPT
 
     def test_the_interview_prompt_demands_discrimination(self):
-        assert "which of your working_hypotheses is leading" in \
-            oc.INTERVIEW_SYSTEM_PROMPT
+        """4.5 states this far more strongly than 3.2 did, so assert the
+        stronger form: the prompt must demand a question that SEPARATES the
+        model's own live readings, not merely one that is missing."""
+        prompt = oc.INTERVIEW_SYSTEM_PROMPT
+        assert "which uncertainty BETWEEN MY OWN CURRENT READINGS matters most" \
+            in prompt
+        assert "if_present_supports" in prompt
+        assert "if_absent_supports" in prompt
+        assert "confirms rather than separates" in prompt
 
 
 # ======================================================================

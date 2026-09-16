@@ -57,8 +57,10 @@ from app.services.interview.mode import (
 )
 
 SPARSE = "咳嗽发热3天。"
+# R1 added 鼻/咽/痰 to the respiratory material list, so a text meant to read
+# as "coverage is already complete" has to state them too.
 RICH = ("发热3天，怕冷无汗，咳嗽有白痰，口不渴，食欲正常，大便正常，"
-        "睡眠可，头身酸痛，胸不闷，受凉后起病。")
+        "睡眠可，头身酸痛，胸不闷，受凉后起病，无鼻塞流涕，无咽痛咽痒。")
 
 
 def route(depth, text=SPARSE):

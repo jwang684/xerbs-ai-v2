@@ -208,9 +208,20 @@ class TestCoverageModel:
         assert domain_for_field(field) == domain
 
     def test_a_complaint_specific_field_maps_to_no_domain(self):
-        """Which is correct: sputum colour is not a 十问歌 category."""
-        assert domain_for_field("sputum_colour") is None
-        assert domain_for_question("sputum_colour", "痰是什么颜色？") is None
+        """A field no domain claims still maps to nothing.
+
+        R1 gave 痰/鼻/咽 canonical domains, so sputum colour is no longer the
+        example -- it resolves now, and that is the repair. When a question
+        genuinely sits outside the map, it must still resolve to None rather
+        than be forced into the nearest domain.
+        """
+        assert domain_for_field("cough_timing") is None
+        assert domain_for_question("cough_timing", "咳嗽夜间加重吗？") is None
+
+    def test_the_three_domains_r1_added_now_resolve(self):
+        assert domain_for_field("sputum_colour") == "sputum"
+        assert domain_for_field("sore_throat") == "throat"
+        assert domain_for_field("nasal_discharge") == "nose"
 
 
 # ======================================================================
@@ -236,8 +247,15 @@ class TestScenarioA_SparseRespiratory:
         assert selection.deterministic == []
 
     def test_the_complaint_specific_questions_are_asked_instead(self):
+        """All three, with 寒热 first.
+
+        Before R1 痰 and 咽 mapped to no domain and scored FOCUS_WEIGHT_UNMAPPED
+        (18), which put 痰 above 寒热's material weight ordering by accident.
+        They are real domains now, appended to the respiratory material list,
+        so they start low and climb when the differential names them.
+        """
         selection = run(self.TEXT, self.PROPOSALS)
-        assert fields_of(selection) == ["sputum_character", "aversion_to_cold",
+        assert fields_of(selection) == ["aversion_to_cold", "sputum_character",
                                         "sore_throat"]
 
     def test_it_is_not_ten_questions(self):
@@ -313,7 +331,14 @@ class TestScenarioC_Digestive:
         assert states["chest_abdomen"] == KNOWN
         assert states["diet"] == KNOWN
 
-    def test_a_respiratory_question_scores_below_a_digestive_one(self):
+    def test_a_respiratory_question_is_dropped_outright_here(self):
+        """Stronger than before R1, not weaker.
+
+        痰 had no domain, so it could only be out-scored; it still reached the
+        patient if a slot was free. It is a real domain now, and one that is
+        not material to a digestive complaint, so the existing NOT_RELEVANT
+        rule excludes it outright -- the same treatment 睡眠 already gets here.
+        """
         coverage = assess_coverage(self.TEXT)
         signals = DifferentialSignals()
         respiratory = score_candidate(
@@ -321,16 +346,17 @@ class TestScenarioC_Digestive:
         digestive = score_candidate(
             adaptive("thirst_preference", "口渴吗？喜热饮还是冷饮？"),
             coverage, signals)
-        assert digestive.score > respiratory.score
+        assert respiratory is None
+        assert digestive.score > 0
 
-    def test_the_respiratory_question_earns_no_complaint_link_here(self):
-        """The same question is worth more in its own complaint than in this one."""
+    def test_the_respiratory_question_is_worth_nothing_here_and_something_there(self):
+        """The same question, immaterial here and material in its own complaint."""
         question = adaptive("sputum_character", "咳嗽有痰吗？")
         here = score_candidate(question, assess_coverage(self.TEXT),
                                DifferentialSignals())
         there = score_candidate(question, assess_coverage("咳嗽发热3天"),
                                 DifferentialSignals())
-        assert here.components["complaint_link"] == 0
+        assert here is None
         assert there.components["complaint_link"] == cov.WEIGHT_COMPLAINT_LINK
 
     def test_the_digestive_question_is_the_one_asked(self):
@@ -379,8 +405,12 @@ class TestScenarioD_SleepFatigue:
 class TestScenarioE_AlreadySufficient:
     """Few or zero questions where the pipeline can legitimately proceed."""
 
+    # R1 added 鼻/咽/痰 to the respiratory material list. 痰 was already stated
+    # (咳嗽有白痰); 鼻 and 咽 are stated here so the scenario still means what
+    # its name says -- a case where nothing material is outstanding.
     TEXT = ("发热3天，怕冷无汗，咳嗽有白痰，口不渴，"
-            "食欲正常，大便正常，睡眠可，头身酸痛，胸不闷，受凉后起病。")
+            "食欲正常，大便正常，睡眠可，头身酸痛，胸不闷，受凉后起病，"
+            "无鼻塞流涕，无咽痛咽痒。")
 
     def test_every_material_domain_is_covered(self):
         assert assess_coverage(self.TEXT).unknown_material() == []
@@ -429,6 +459,21 @@ class TestScenarioF_MultiTurn:
         assert "aversion_to_cold" not in fields_of(selection)
         assert "sweating" not in fields_of(selection)
 
+    def test_the_sputum_question_is_now_suppressed_by_domain(self):
+        """X1D-LEGACYDIAG4.4B-R1: 白痰 on turn 1 answers 痰, so turn 2 stops
+        asking it.
+
+        Before R1 this question mapped to no domain and survived here, leaving
+        core's field-level dedup as the only thing standing between the patient
+        and being asked about their phlegm again under any new wording. 痰 is a
+        canonical domain now, the text marks it KNOWN, and the existing
+        exclusion rule does the rest.
+        """
+        selection = run(self.TURN2, [adaptive(*self.PROPOSALS[0])])
+        assert fields_of(selection) == []
+        assert domain_for_question("sputum_character", "咳嗽有痰吗？") == "sputum"
+        assert assess_coverage(self.TURN2).states["sputum"] == KNOWN
+
     def test_field_level_repeats_remain_cores_layer(self):
         """A question mapping to no 十问歌 domain is deduped by field, in core.
 
@@ -437,9 +482,9 @@ class TestScenarioF_MultiTurn:
         clarification_policy.previously_asked_fields owns that and is unchanged
         by this phase. Stated as a test so the division stays deliberate.
         """
-        selection = run(self.TURN2, [adaptive(*self.PROPOSALS[0])])
-        assert fields_of(selection) == ["sputum_character"]
-        assert domain_for_question("sputum_character", "咳嗽有痰吗？") is None
+        selection = run(self.TURN2, [adaptive("cough_timing", "咳嗽夜间加重吗？")])
+        assert fields_of(selection) == ["cough_timing"]
+        assert domain_for_question("cough_timing", "咳嗽夜间加重吗？") is None
 
     def test_the_answered_domains_read_as_known_on_turn_two(self):
         states = assess_coverage(self.TURN2).states

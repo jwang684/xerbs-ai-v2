@@ -9,6 +9,8 @@ from app.schemas.reasoning import (
     ClarificationQuestion,
     ClinicalReasoningEnvelope,
     InterviewReasoning,
+    ResolvableEvidence,
+    WorkingDifferentialState,
 )
 from app.schemas.safety import SafetyScreenRequest
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
@@ -20,6 +22,11 @@ from app.services.clarification.validator import validate_proposals_detailed
 from app.services.recommendation.consumer_projection import (
     build_consumer_reasoning,
 )
+from app.services.interview.differential import (
+    differential_required_domains,
+    signals_from_state,
+    validate_state,
+)
 from app.services.interview.mode import (
     INTERVIEW,
     decide_mode,
@@ -27,6 +34,7 @@ from app.services.interview.mode import (
 )
 from app.services.telemetry.clarification_rejection import outcome_flags
 from app.services.clarification.coverage import (
+    KNOWN,
     Candidate,
     assess_coverage,
     extract_differential_signals,
@@ -105,12 +113,38 @@ class RecommendationAssembler:
         )
         interview_mode = mode == INTERVIEW
 
+        # X1D-LEGACYDIAG4.4B: the carried differential reaches the INTERVIEW
+        # contract and only that one.
+        #
+        # FULL_REASONING is deliberately given nothing. It is the turn whose
+        # output has downstream consequence, and seeding it with three turns of
+        # accumulated model opinion is precisely how a working guess becomes a
+        # conclusion. It re-derives from patient evidence, and is allowed to
+        # disagree with the interview -- that disagreement is signal.
+        carry = getattr(request, "interview_state", None)
         if interview_mode:
+            # X1D-LEGACYDIAG4.5: which domains the patient has already
+            # settled. A pure function of text already in hand -- no extra
+            # call, no extra round trip. Server-side suppression stays the
+            # authority; this only stops the model spending one of its three
+            # proposals asking something already on record.
+            try:
+                answered_now = {
+                    key for key, state in assess_coverage(
+                        " ".join([request.text_input or "",
+                                  *request.symptoms])).states.items()
+                    if state == KNOWN}
+            except Exception:  # noqa: BLE001 - a prompt aid never breaks a turn
+                answered_now = set()
+
             result = await self.provider.generate_interview(
                 text_input=request.text_input,
                 symptoms=request.symptoms,
                 language=request.language,
                 on_display_text=on_display_text,
+                carry_state=(carry.model_dump(mode="json")
+                             if carry is not None else None),
+                known_domains=sorted(answered_now),
             )
         else:
             result = await self.provider.generate_recommendation(
@@ -186,6 +220,42 @@ class RecommendationAssembler:
             except Exception:  # noqa: BLE001 - ranking must not break clinical work
                 signal_source = None
                 uncertainty_flags.append("INTERVIEW_REASONING_UNPARSEABLE")
+
+            # X1D-LEGACYDIAG4.4B: validate before anything reads it.
+            #
+            # Citations are checked against what the patient actually supplied,
+            # and a standing may not rise without evidence that was not already
+            # being cited. Only what survives both is ranked on, carried, or
+            # stored -- the raw model state is never any of those things.
+            try:
+                evidence = (carry.resolvable_evidence if carry is not None
+                            else ResolvableEvidence())
+                prior = carry.prior if carry is not None else None
+                validated, notes = validate_state(
+                    (result.interview or {}).get("working_differential"),
+                    evidence, prior)
+                if validated is not None:
+                    reasoning.working_differential = validated.model_dump(
+                        mode="json")
+                    signal_source = validated
+                # X1D-LEGACYDIAG4.5: how many discriminators the model
+                # offered that could not be acted on. Deduped notes say a
+                # rule fired; the count says how often, which is what an
+                # acceptance run has to be able to measure.
+                dropped = sum(1 for n in notes
+                              if n == "DISCRIMINATOR_NO_LIVE_COMPETITION")
+                unproven = sum(1 for n in notes
+                               if n == "DISCRIMINATOR_WITHOUT_COUNTERFACTUAL")
+                if dropped:
+                    uncertainty_flags.append(
+                        "DIFFERENTIAL_DISCRIMINATORS_DROPPED_%d" % dropped)
+                if unproven:
+                    uncertainty_flags.append(
+                        "DIFFERENTIAL_DISCRIMINATORS_UNPROVEN_%d" % unproven)
+                for note in dict.fromkeys(notes):
+                    uncertainty_flags.append("DIFFERENTIAL_%s" % note)
+            except Exception:  # noqa: BLE001 - a display/ranking aid never breaks a turn
+                uncertainty_flags.append("DIFFERENTIAL_STATE_UNAVAILABLE")
         else:
             try:
                 envelope = ClinicalReasoningEnvelope(**(result.clinical_reasoning or {}))
@@ -265,8 +335,28 @@ class RecommendationAssembler:
         try:
             accumulated_text = " ".join(
                 [request.text_input or "", *request.symptoms])
-            coverage = assess_coverage(accumulated_text)
-            signals = extract_differential_signals(signal_source)
+            # X1D-LEGACYDIAG4.4B: two shapes of signal source, one set
+            # of weights. The validated state resolves its domains from field
+            # identifiers; everything else is still read as prose.
+            signals = (
+                signals_from_state(signal_source)
+                if isinstance(signal_source, WorkingDifferentialState)
+                else extract_differential_signals(signal_source))
+
+            # X1D-LEGACYDIAG4.4B-R2: what the live hypotheses still need.
+            #
+            # Computed before coverage, because coverage now has to know it:
+            # a domain this differential depends on must not be struck out as
+            # "not material" by a focus profile that was matched off complaint
+            # markers alone. Contradicted domains travel with it for the same
+            # reason -- eligibility only, and neither gets a score for it.
+            required_domains = (
+                differential_required_domains(signal_source)
+                if isinstance(signal_source, WorkingDifferentialState)
+                else set())
+            eligible_domains = required_domains | set(
+                signals.contradiction_domains)
+            coverage = assess_coverage(accumulated_text, eligible_domains)
 
             # The reasoning engine appends to missing_information and
             # followup_questions in lockstep, so index i pairs. If that ever
@@ -310,6 +400,7 @@ class RecommendationAssembler:
                 adaptive=adaptive_candidates,
                 coverage=coverage,
                 signals=signals,
+                differential_domains=required_domains,
             )
 
             if paired:

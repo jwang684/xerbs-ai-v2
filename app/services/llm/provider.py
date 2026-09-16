@@ -80,7 +80,7 @@ class LLMProvider(ABC):
     async def generate_recommendation(self, *, text_input: str, symptoms: list[str], goals: list[str], constraints: list[str], image_data: str | None, language: str) -> ProviderResult:
         raise NotImplementedError
 
-    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str, on_display_text=None) -> ProviderResult:
+    async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str, on_display_text=None, carry_state: dict | None = None, known_domains: list | None = None) -> ProviderResult:
         """The small call: what should we ask next, and why.
 
         Concrete rather than abstract so an existing provider keeps working

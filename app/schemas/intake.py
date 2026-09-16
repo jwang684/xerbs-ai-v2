@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from app.schemas.reasoning import InterviewCarryState
 from app.schemas.safety import PatientContext
 
 
@@ -20,3 +21,9 @@ class RecommendationRequest(BaseModel):
     # interviewing after a bounded number of turns; it carries no clinical
     # meaning and grants nothing.
     interview_depth: int = Field(default=0, ge=0, le=50)
+    # X1D-LEGACYDIAG4.4B: the previous turn's validated working
+    # differential, plus the list of evidence this case can actually
+    # substantiate. Supplied by core from governed trace history --
+    # never by the browser, which must not be able to invent a
+    # hypothesis or authorise a citation.
+    interview_state: InterviewCarryState | None = None

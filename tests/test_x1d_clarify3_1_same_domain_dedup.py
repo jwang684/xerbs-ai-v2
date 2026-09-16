@@ -249,9 +249,15 @@ class TestScenarioC_Respiratory:
         assert selection.same_domain_suppressed == 0
 
     def test_they_occupy_three_different_domains(self):
+        """R1 made the third one a domain rather than an absence of one.
+
+        The property under test is unchanged -- three questions, three
+        distinct domains, none suppressing another -- and it is now true by
+        canonical identity instead of by 痰 having no identity at all.
+        """
         assert resolve_domain("aversion_to_cold", "")[0] == "cold_heat"
         assert resolve_domain("sweating", "")[0] == "sweat"
-        assert resolve_domain("sputum_character", "")[0] is None
+        assert resolve_domain("sputum_character", "")[0] == "sputum"
 
     def test_an_unmapped_question_never_occupies_a_domain(self):
         """Two complaint-specific questions must not collapse into each other."""
@@ -452,8 +458,16 @@ class TestScenarioH_Budget:
         assert cov.MIN_ADAPTIVE_SCORE == 40
         assert cov.MODEL_PRIORITY_WEIGHT == {"high": 6, "medium": 3, "low": 0}
 
-    def test_the_domain_definitions_are_unchanged(self):
-        assert len(cov.DOMAINS) == 12
+    def test_the_domain_definitions_are_the_twelve_plus_r1s_three(self):
+        """Closed set, and it names what R1 added rather than just widening.
+
+        The 4.4B fork measured the cost of the omission: 9 of 12 model-named
+        discriminators were nose, throat or sputum, and every one was discarded
+        before ranking because no canonical domain could hold it.
+        """
+        assert len(cov.DOMAINS) == 15
+        assert [d.key for d in cov.DOMAINS][-3:] == ["nose", "throat",
+                                                     "sputum"]
         assert [p.key for p in cov.FOCUS_PROFILES] == [
             "respiratory", "digestive", "sleep_fatigue", "pain"]
 

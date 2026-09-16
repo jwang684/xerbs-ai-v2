@@ -183,6 +183,32 @@ Required JSON object:
   ],
   "missing_information": ["what you most need to know, in short phrases"],
   "information_sufficient": false,
+  "working_differential": {
+    "hypotheses": [
+      {
+        "pattern_name": "...",
+        "standing": "PRIMARY_WORKING | PLAUSIBLE | WEAKENED | RULED_OUT_FOR_NOW",
+        "supporting_evidence": [
+          {"origin": "COMPLAINT"},
+          {"origin": "OBSERVATION", "field": "sweating"},
+          {"origin": "ANSWER", "question_field": "sputum_colour", "turn_id": 1}
+        ],
+        "contradicting_evidence": [],
+        "unresolved_discriminators": [
+          {
+            "domain": "one of the allowed domain names",
+            "separates": ["a pattern_name above", "another pattern_name above"],
+            "if_present_supports": ["which of those a POSITIVE answer favours"],
+            "if_absent_supports": ["which of those a NEGATIVE answer favours"],
+            "rationale": "one short line on why this answer would move things"
+          }
+        ]
+      }
+    ],
+    "evidence_gaps": [
+      {"domain": "sweat", "separates": ["pattern A", "pattern B"]}
+    ]
+  },
   "clarification_proposals": [
     {
       "field": "snake_case_identifier",
@@ -194,13 +220,35 @@ Required JSON object:
   ]
 }
 
+Work in this order, and do not skip to the end:
+
+STEP 1  Re-read the patient evidence and decide which readings it now supports.
+STEP 2  Among the readings that are still live (PRIMARY_WORKING or PLAUSIBLE),
+        find the single most important unsettled competition -- the two whose
+        difference matters most for what happens next.
+STEP 3  For that competition, name the smallest set of findings the patient has
+        NOT yet reported that would actually tell those two apart.
+STEP 4  Map each of those findings to one of the allowed domain names below.
+STEP 5  Write them as unresolved_discriminators, each naming the readings it
+        separates and what a positive and a negative answer would each favour.
+STEP 6  Only now write clarification_proposals, one per discriminator you
+        found, in that order.
+
+The question you are answering is NOT "what do I not know yet?" -- a checklist
+can produce that and it is nearly the same list whatever the patient said. The
+question is "which uncertainty BETWEEN MY OWN CURRENT READINGS matters most?"
+
+A useful question is one whose different answers would move your readings in
+different directions. If a finding would support the same reading whether it is
+present or absent, it confirms rather than separates, and it is not worth one of
+your three slots. Prefer the question that would most change the ordering.
+
 How to choose the questions:
 - give at most 3, and fewer when fewer would do. Two good questions beat four
-- ask what would most change which of your working_hypotheses is leading. A
-  question whose answer cannot move the ranking is not worth asking
 - ask only about this complaint. Do not run a general intake checklist
-- never ask about anything the input already states. Read the input carefully
-  first: information supplied by the patient is already known
+- never ask about anything the input already states, and never about a domain
+  listed under ALREADY_KNOWN. Read the input carefully first: information
+  supplied by the patient is already known
 - do not invent findings. If something was not reported, it is unknown, not absent
 - questions must be short, plain, and answerable by a patient
 
@@ -222,6 +270,71 @@ the identifier is English; the question text stays in the patient's language.
 
 Set information_sufficient true only when another question would add nothing
 material. It is advisory: deterministic governance decides what happens next.
+
+working_differential rules:
+- this is your working set of candidate readings, not a diagnosis. Two or three
+  is usually right
+- standing is ordinal and has no number attached. Use PRIMARY_WORKING for the
+  reading that currently fits best, WEAKENED for one the evidence argues
+  against, RULED_OUT_FOR_NOW for one that is currently implausible but could
+  return if new information appeared. Nothing here is final
+- evidence is a CITATION, never a statement. Cite only:
+    {"origin": "COMPLAINT"}                         the patient's own words
+    {"origin": "OBSERVATION", "field": "..."}       a field the patient filled in
+    {"origin": "ANSWER", "question_field": "..."}   a question the patient answered
+  A citation that does not resolve to something the patient actually supplied
+  is discarded. Do not describe findings the patient never reported -- if a
+  tongue or pulse was never described to you, it is unknown, not normal
+- unresolved_discriminators are what you still need in order to tell your
+  candidates apart. This is what the next question should be for. Each one must:
+    * name in "separates" at least TWO DIFFERENT readings from your own
+      hypotheses list above, both of which are still live. Naming a reading you
+      have not listed, or naming the same one twice, describes a competition
+      that is not happening and is discarded
+    * give "if_present_supports" and "if_absent_supports" from those same
+      names, and they must not be identical. If both answers favour the same
+      reading, the finding confirms something rather than separating anything,
+      and it will not earn a question slot
+    * this is a demonstration, not a formality: it is how you show that asking
+      would actually change your mind
+- the names you write in separates, if_present_supports and
+  if_absent_supports must be copied EXACTLY from your own pattern_name values
+  above. Not a paraphrase, not a translation, not a near-synonym, and never a
+  reading you did not list. A name that is not one of yours describes a
+  competition that is not happening and the whole discriminator is discarded.
+  If a new reading is warranted, add it to the hypotheses list first; it can
+  take part in a discriminator on a later turn
+- if only ONE reading is live, say so and do not invent a second one to have
+  something to separate. Report what would strengthen or weaken the one you
+  have, leave unresolved_discriminators empty, and let the missing_information
+  list carry the rest
+- evidence_gaps name a domain and the two readings it would separate
+- every "domain" you write, in unresolved_discriminators and evidence_gaps
+  alike, MUST be one of these fifteen names, spelled exactly:
+    cold_heat  sweat  head_body  excretion  diet  chest_abdomen  ear_eye
+    thirst  past_illness  cause  sleep  onset_duration  nose  throat  sputum
+  Use the nearest one rather than inventing a name: 鼻塞/流涕 is nose, 咽痛 is
+  throat, 痰的颜色或多少 is sputum, 口渴 is thirst, 怕冷发热 is cold_heat. A
+  domain outside this list cannot be acted on and is discarded
+
+If PREVIOUS WORKING DIFFERENTIAL is supplied:
+- it is your own earlier reasoning, not established fact and not patient
+  information. Re-evaluate every entry against the patient evidence as it
+  stands now
+- you may strengthen, weaken, replace or drop any of them, and you may add
+  alternatives that did not occur to you before
+- do not carry a hypothesis forward merely because it was there before, and do
+  not raise a standing without citing evidence you were not already citing
+- agreeing with yourself is not evidence. If the answers you have since
+  received fit a different reading better, lead with that one and say what
+  moved. A differential that never changes across turns has learned nothing
+- consistency with your earlier self is worth nothing here. Only the patient
+  evidence counts
+
+If ALREADY_KNOWN is supplied it lists domains the patient has already answered.
+Do not propose a discriminator or a question in any of them -- that answer is
+already on record, and asking again spends a slot and the patient's patience
+for nothing.
 """
 
 
@@ -293,6 +406,8 @@ class OpenAICompatibleProvider(LLMProvider):
         symptoms: list[str],
         language: str,
         on_display_text=None,
+        carry_state: dict | None = None,
+        known_domains: list | None = None,
     ) -> ProviderResult:
         """The small call. Same transport, different contract.
 
@@ -302,11 +417,41 @@ class OpenAICompatibleProvider(LLMProvider):
         is absent: formula_candidates and clinical_reasoning are empty here by
         construction, not by filtering.
         """
-        content = json.dumps(
-            {"text_input": text_input, "symptoms": symptoms,
-             "language": language},
-            ensure_ascii=False,
-        )
+        # X1D-LEGACYDIAG4.4B: two sections, never one prose history.
+        #
+        # Flattening patient evidence and prior model reasoning into a single
+        # narrative destroys provenance: the model can no longer tell what it
+        # was told from what it previously guessed, and neither can anyone
+        # reading the prompt afterwards.
+        payload: dict = {
+            "PATIENT_EVIDENCE": {
+                "note": "Supplied by the patient. Authoritative input.",
+                "text_input": text_input,
+                "symptoms": symptoms,
+                "language": language,
+            },
+        }
+        if known_domains:
+            # X1D-LEGACYDIAG4.5: domains the patient has already answered.
+            # Server-side suppression is still the authority; this only stops
+            # the model spending one of three proposals on a settled question.
+            payload["ALREADY_KNOWN"] = {
+                "note": ("The patient has already answered these domains. Do "
+                         "not ask about them again."),
+                "domains": sorted(known_domains),
+            }
+        if carry_state is not None:
+            payload["PREVIOUS_WORKING_DIFFERENTIAL"] = {
+                "note": ("Your own earlier reasoning. NOT established fact and "
+                         "NOT patient information. Re-evaluate it."),
+                "state": carry_state.get("prior"),
+            }
+            payload["CITABLE_EVIDENCE"] = {
+                "note": ("The only things you may cite. A citation outside "
+                         "this list is discarded."),
+                **(carry_state.get("resolvable_evidence") or {}),
+            }
+        content = json.dumps(payload, ensure_ascii=False)
         data, usage, provider_latency_ms, first_delta_ms = await self._call(
             INTERVIEW_SYSTEM_PROMPT, content, on_display_text)
 
@@ -318,7 +463,8 @@ class OpenAICompatibleProvider(LLMProvider):
         interview = {
             key: data.get(key)
             for key in ("interview_summary", "working_hypotheses",
-                        "missing_information", "information_sufficient")
+                        "missing_information", "information_sufficient",
+                        "working_differential")
             if data.get(key) is not None
         }
 

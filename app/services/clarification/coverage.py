@@ -198,6 +198,41 @@ DOMAINS: Tuple[Domain, ...] = (
            ("久", "长期"),
            ("duration", "onset", "since", "how_long"),
            default_question="症状持续多久？从什么时候开始的？"),
+    # X1D-LEGACYDIAG4.4B-R1: three domains the map was missing entirely.
+    #
+    # FOCUS_PROFILES["respiratory"] already recognises 咳 痰 鼻塞 流涕 咽痛 well
+    # enough to CLASSIFY a complaint by them, and then had nowhere to put them:
+    # its material list could name no nose, throat or sputum domain, because
+    # none existed. The 4.4B fork measured the consequence -- the interview
+    # kept naming nasal_symptoms, throat_pain and sputum_character as its
+    # discriminators, and every one of them resolved to None and was dropped
+    # before ranking. For an exterior pattern these are not peripheral: 清涕 with
+    # 白稀痰 against 咽痛 with 黄黏痰 is most of what separates 风寒 from 风热.
+    Domain("nose", "鼻",
+           ("鼻塞", "流涕", "流鼻涕", "清涕", "黄涕", "喷嚏", "鼻痒", "鼻干",
+            "鼻涕", "无鼻塞", "不流涕"),
+           ("鼻",),
+           ("nose", "nasal", "rhin", "sneez", "runny"),
+           default_question="有没有鼻塞或流鼻涕？鼻涕是清的还是黄的？",
+           default_choices=("鼻塞为主", "流清涕", "流黄涕", "打喷嚏", "都没有",)),
+    Domain("throat", "咽喉",
+           ("咽痛", "咽喉痛", "喉咙痛", "嗓子痛", "咽痒", "咽干", "声嘶",
+            "吞咽困难", "咽部不适", "咽喉肿痛", "咽红",
+            "咽不痛", "咽喉不痛", "嗓子不痛", "喉咙不痛"),
+           ("咽", "喉"),
+           ("throat", "pharyn", "tonsil", "hoars", "swallow"),
+           default_question="咽喉有没有疼痛、发痒或者干燥？",
+           default_choices=("咽痛明显", "咽痒", "咽干", "声音嘶哑", "都没有",)),
+    Domain("sputum", "痰",
+           ("白痰", "黄痰", "痰多", "痰少", "无痰", "痰黏", "痰稀", "咳痰",
+            "痰色", "痰中带血",
+            # 同一件事的另一种语序与否定式。患者说"痰黄"与"黄痰"是一回事，
+            # 说"没有痰"也是答了这个问题。
+            "痰白", "痰黄", "黏痰", "稀痰", "没有痰", "痰是白", "痰是黄"),
+           ("痰",),
+           ("sputum", "phlegm", "mucus", "expector"),
+           default_question="咳嗽有痰吗？痰是什么颜色，稀还是黏？",
+           default_choices=("没有痰", "白稀痰", "白黏痰", "黄痰", "痰难咳出",)),
 )
 
 DOMAINS_BY_KEY: Dict[str, Domain] = {d.key: d for d in DOMAINS}
@@ -232,8 +267,12 @@ FOCUS_PROFILES: Tuple[FocusProfile, ...] = (
         "respiratory",
         ("咳", "痰", "喘", "鼻塞", "流涕", "咽痛", "咽痒", "气促", "哮",
          "喷嚏", "声嘶", "感冒"),
+        # R1 appends nose/throat/sputum. Appended rather than placed by
+        # clinical value on purpose: position is weight, and re-ordering this
+        # list would be a ranking change. They arrive at the bottom and earn
+        # their way up through the differential signals they can now carry.
         ("cold_heat", "sweat", "thirst", "head_body", "onset_duration",
-         "chest_abdomen", "cause"),
+         "chest_abdomen", "cause", "nose", "throat", "sputum"),
     ),
     FocusProfile(
         "digestive",
@@ -312,16 +351,38 @@ def _material_for(focus: str) -> Tuple[str, ...]:
     return tuple(d.key for d in DOMAINS)
 
 
-def assess_coverage(text: str) -> CoverageAssessment:
+def assess_coverage(text: str,
+                    differential_domains: Iterable[str] = ()) -> CoverageAssessment:
     """Mark every domain from explicit patient facts only.
 
     Nothing is inferred and nothing is defaulted: a domain the patient did not
     mention is UNKNOWN, which is a statement about the record rather than a
     claim about the patient.
+
+    X1D-LEGACYDIAG4.4B-R2 adds ``differential_domains``: canonical domains the
+    validated working differential says it still needs to tell its live
+    hypotheses apart. NOT_RELEVANT has always meant "not material to this
+    differential" -- and until now the only thing that decided it was the
+    coarse focus profile, matched off complaint markers. When an actual
+    differential exists and names a domain, that reading is simply wrong, and
+    the R1 fork measured the cost: on a pain-focus complaint every discriminator
+    the model asked for (sweat, thirst, nose, throat, sputum) was excluded as
+    NOT_RELEVANT before its gap weight could apply, and 病因/旧病 were asked
+    instead.
+
+    This grants no score and no priority. It only stops a domain being struck
+    out before the existing weights get to judge it.
     """
     text = text or ""
     focus = identify_focus(text)
     material = _material_for(focus)
+    # R2 lifts the veto by changing this domain's STATE, deliberately not by
+    # adding it to ``material``. Materiality also drives unknown_material(),
+    # and therefore assess_sufficiency: a required domain joining material
+    # would silently turn a one-question narrowing turn into a three-question
+    # open one. Lifting the state alone leaves the budget decision exactly
+    # where it was and still lets the candidate compete on existing weights.
+    required = {d for d in (differential_domains or ()) if d}
 
     states: Dict[str, CoverageState] = {}
     for domain in DOMAINS:
@@ -334,7 +395,8 @@ def assess_coverage(text: str) -> CoverageAssessment:
                 # not answered, so it stays askable at PARTIAL weight.
                 states[domain.key] = PARTIAL
             elif domain.key not in material:
-                states[domain.key] = NOT_RELEVANT
+                states[domain.key] = (UNKNOWN if domain.key in required
+                                      else NOT_RELEVANT)
             else:
                 states[domain.key] = UNKNOWN
         elif _hits(text, domain.strong):
@@ -343,8 +405,11 @@ def assess_coverage(text: str) -> CoverageAssessment:
             states[domain.key] = PARTIAL
         elif domain.key not in material:
             # Not material to this differential. Still unknown in the record --
-            # this says only that it is not worth a slot right now.
-            states[domain.key] = NOT_RELEVANT
+            # this says only that it is not worth a slot right now. Unless the
+            # validated differential named it, in which case "not material" is
+            # simply false and R2 says so.
+            states[domain.key] = (UNKNOWN if domain.key in required
+                                  else NOT_RELEVANT)
         else:
             states[domain.key] = UNKNOWN
 
@@ -366,6 +431,68 @@ def domain_for_field(field_name: Any) -> Optional[str]:
         if any(alias in name for alias in domain.aliases):
             return domain.key
     return None
+
+
+# X1D-LEGACYDIAG4.4B-R1: one bounded allowlist for vocabulary that means a
+# domain we already have under a name we do not.
+#
+# Every entry here was observed in the failed 4.4B fork or is the STRUCTURED1
+# field identity for the same question family. It is deliberately small: this
+# maps WORDS to WORDS and must never be mistaken for clinical inference. An
+# unrecognised name resolves to None and loses its signal, which is the correct
+# direction -- a domain nobody can name cannot be ranked, but guessing what it
+# meant would let vocabulary invent evidence.
+DOMAIN_ALIASES: Dict[str, str] = {
+    # observed, 4.4B fork, ai-v2 staging
+    "nasal_symptoms": "nose",
+    "nasal_discharge": "nose",
+    "nasal_congestion": "nose",
+    "runny_nose": "nose",
+    "rhinitis": "nose",
+    "throat_pain": "throat",
+    "sore_throat": "throat",
+    "sputum_amount": "sputum",
+    "sputum_character": "sputum",
+    "sputum_colour": "sputum",
+    "sputum_color": "sputum",
+    "cough_sputum_detail": "sputum",
+    "phlegm_amount": "sputum",
+    "phlegm_character": "sputum",
+    "sweat_detail": "sweat",
+    # STRUCTURED1 field identities for the same families
+    "temperature": "cold_heat",
+    "chills_or_heat": "cold_heat",
+    "aversion_to_cold": "cold_heat",
+    "sweating": "sweat",
+    "perspiration": "sweat",
+    "thirst": "thirst",
+    "urination": "excretion",
+}
+
+
+def normalize_clinical_domain(raw_domain: Any) -> Optional[str]:
+    """Map any layer's name for a domain onto the one canonical key, or None.
+
+    Deterministic and total, in four ordered steps, most certain first:
+
+      1. already a canonical key;
+      2. an explicit alias in the table above;
+      3. an ASCII field identifier, via the existing per-domain alias lists;
+      4. Chinese marker text, via the existing marker lists.
+
+    No fuzzy matching, no embeddings, no model call. Step 4 is last because it
+    is the only inexact one -- it asks whether a string MENTIONS a domain, not
+    whether it IS one. Unknown input returns None rather than a guess.
+    """
+    text = str(raw_domain or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in DOMAINS_BY_KEY:
+        return lowered
+    if lowered in DOMAIN_ALIASES:
+        return DOMAIN_ALIASES[lowered]
+    return domain_for_field(lowered) or domain_for_text(text)
 
 
 def domain_for_text(text: Any) -> Optional[str]:
@@ -497,6 +624,44 @@ class DifferentialSignals:
         return bool(self.contradiction_domains)
 
 
+def signals_from_domains(
+    gap_domains: Any,
+    hypothesis_domains: Any,
+) -> DifferentialSignals:
+    """Build signals from domains that are already resolved.
+
+    X1D-LEGACYDIAG4.4B factored this out of extract_differential_signals so
+    that the rule below has exactly one implementation. Two callers reach it:
+    envelope prose, whose domains are guessed from text, and the validated
+    working differential, whose domains come from field identifiers. What
+    counts as a signal must not depend on which of those it was.
+
+    hypothesis_domains is one (supporting, contradicting) pair per competing
+    reading, each a set of domain keys.
+    """
+    gaps = {d for d in (gap_domains or []) if d}
+    contradictions: set = set()
+    support_counts: Dict[str, int] = {}
+
+    pairs = list(hypothesis_domains or [])
+    for supporting, contradicting in pairs:
+        contradictions |= {d for d in (contradicting or []) if d}
+        for domain in {d for d in (supporting or []) if d}:
+            support_counts[domain] = support_counts.get(domain, 0) + 1
+
+    # A domain cited by exactly one of the competing hypotheses is what
+    # separates them. With fewer than two hypotheses there is nothing to
+    # separate, so no domain is discriminating.
+    discriminating = ({d for d, n in support_counts.items() if n == 1}
+                      if len(pairs) >= 2 else set())
+
+    return DifferentialSignals(
+        gap_domains=frozenset(gaps),
+        contradiction_domains=frozenset(contradictions),
+        discriminating_domains=frozenset(discriminating),
+    )
+
+
 def extract_differential_signals(envelope: Any) -> DifferentialSignals:
     """Read the envelope for hints about what is still in question.
 
@@ -507,41 +672,19 @@ def extract_differential_signals(envelope: Any) -> DifferentialSignals:
     if envelope is None:
         return DifferentialSignals()
 
-    gaps: set = set()
-    contradictions: set = set()
-    discriminating: set = set()
+    gaps = {domain_for_text(item)
+            for item in getattr(envelope, "missing_information", None) or []}
 
-    for item in getattr(envelope, "missing_information", None) or []:
-        domain = domain_for_text(item)
-        if domain:
-            gaps.add(domain)
+    pairs = []
+    for hypothesis in getattr(envelope, "pattern_hypotheses", None) or []:
+        pairs.append((
+            {domain_for_text(f) for f in
+             getattr(hypothesis, "supporting_findings", None) or []},
+            {domain_for_text(f) for f in
+             getattr(hypothesis, "contradicting_findings", None) or []},
+        ))
 
-    hypotheses = list(getattr(envelope, "pattern_hypotheses", None) or [])
-    support_counts: Dict[str, int] = {}
-    for hypothesis in hypotheses:
-        for finding in getattr(hypothesis, "contradicting_findings", None) or []:
-            domain = domain_for_text(finding)
-            if domain:
-                contradictions.add(domain)
-        seen_here: set = set()
-        for finding in getattr(hypothesis, "supporting_findings", None) or []:
-            domain = domain_for_text(finding)
-            if domain:
-                seen_here.add(domain)
-        for domain in seen_here:
-            support_counts[domain] = support_counts.get(domain, 0) + 1
-
-    # A domain cited by exactly one of the competing hypotheses is what
-    # separates them. With fewer than two hypotheses there is nothing to
-    # separate, so no domain is discriminating.
-    if len(hypotheses) >= 2:
-        discriminating = {d for d, n in support_counts.items() if n == 1}
-
-    return DifferentialSignals(
-        gap_domains=frozenset(gaps),
-        contradiction_domains=frozenset(contradictions),
-        discriminating_domains=frozenset(discriminating),
-    )
+    return signals_from_domains(gaps, pairs)
 
 
 def _focus_weight(coverage: CoverageAssessment, domain: Optional[str],
@@ -712,6 +855,7 @@ def select_questions(
     adaptive: Sequence[Candidate],
     coverage: CoverageAssessment,
     signals: DifferentialSignals,
+    differential_domains: Iterable[str] = (),
     limit: int = MAX_VISIBLE_QUESTIONS_PER_TURN,
 ) -> SelectionResult:
     """Rank both kinds of question together and keep the highest few.
@@ -734,9 +878,29 @@ def select_questions(
     adaptive_scored = [s for s in scored
                        if s.candidate.kind == "adaptive"
                        and s.score >= MIN_ADAPTIVE_SCORE]
+
+    # X1D-LEGACYDIAG4.4B-R2: two tiers, one ranking pass, no new weight.
+    #
+    # The adaptive budget is three questions and the generic coverage pool is
+    # always large enough to fill it, so a domain the differential actually
+    # needs could lose its slot to a domain nothing is waiting on. The R1 fork
+    # measured that: two branches holding opposite hypotheses asked the same
+    # questions, because both were drawing from the same generic pool by the
+    # same rule.
+    #
+    # Within each tier the existing score is the only ordering, and generic
+    # candidates still fill whatever the differential does not use -- absence
+    # from the working state is not evidence of irrelevance, and must never
+    # become a closed diagnostic tunnel.
+    required = {d for d in (differential_domains or ()) if d}
+
+    def tier(scored_candidate):
+        return 0 if scored_candidate.candidate.domain in required else 1
+
     kept_adaptive = sorted(
         enumerate(adaptive_scored),
-        key=lambda pair: (-pair[1].score, pair[0]))[:max(0, adaptive_budget)]
+        key=lambda pair: (tier(pair[1]),
+                          -pair[1].score, pair[0]))[:max(0, adaptive_budget)]
     allowed_adaptive = {id(s.candidate) for _, s in kept_adaptive}
 
     eligible = [s for s in scored
