@@ -442,10 +442,43 @@ def validate_state(
         if not isinstance(entry, dict):
             continue
         domain = str(entry.get("domain") or "").strip()
-        separates = [str(n).strip() for n in (entry.get("separates") or [])
-                     if str(n).strip()]
-        # A gap that separates patterns nobody is holding is not a gap.
-        separates = [n for n in separates if n in named][:2]
+        # X1D-LEGACYDIAG4.6-R6: the last of the seven, and the only one that
+        # was WRONG rather than merely fragile.
+        #
+        # `or []` let anything truthy through to be iterated, and a string is
+        # iterable. "AB" became ["A","B"] and, if A and B happened to be two
+        # readings on the table, produced a gap the model never declared --
+        # silently, with no exception, no note and no reason code. Downstream
+        # that fabrication is indistinguishable from a real gap: it enters
+        # gap_domains, earns the same WEIGHT_ENVELOPE_GAP, becomes eligible in
+        # differential_required_domains, and can take one of the scarce
+        # adaptive slots from a domain the model actually nominated. A mapping
+        # did the same thing through its keys, and a set was accepted with an
+        # iteration order the [:2] cap then made nondeterministic. 7 and True
+        # simply raised, costing the whole differential the way the R5 sites
+        # did. _as_sequence is used exactly as R5 left it: list and tuple, so
+        # a bare string is not an array here any more than it is there.
+        #
+        # The dedup is the part that was broken on VALID input. Without it
+        # ["A","A","B"] filled the two-name cap with A twice and dropped B --
+        # the genuine second separator lost to a duplicate. First-seen order
+        # is preserved, which is the rule _names states for the discriminator
+        # form of this same field: a list naming one hypothesis twice must not
+        # pass as naming two.
+        #
+        # A gap that separates patterns nobody is holding is not a gap, so the
+        # `in named` filter stays exactly as it was -- `named` is every
+        # hypothesis, not only the live ones, because the live check belongs to
+        # differential_required_domains and already happens there. A single
+        # valid separator is still accepted; requiring two would change an
+        # accepted path and is deliberately not part of R6.
+        separates = []
+        for candidate in _as_sequence(entry.get("separates")):
+            name = str(candidate).strip()
+            if name and name in named and name not in separates:
+                separates.append(name)
+            if len(separates) >= 2:
+                break
         if domain and separates:
             gaps.append({"domain": domain, "separates": separates})
 

@@ -460,12 +460,18 @@ class TestHelperContract:
 # 站点 7：刻意未修改，留给 R6
 # ======================================================================
 
-class TestSite7DeliberatelyUnchanged:
-    """gap["separates"] 的已知缺陷，在此钉成断言。
+class TestSite7CorrectedByR6:
+    """站点 7 的历史：R5 刻意留下，R6 纠正。
 
-    它不属于 R5：R5 只改今天会抛异常的路径。这里的字符串路径今天不抛异常，它
-    静悄悄地产出错误结果，纠正它是语义变更。把当前行为写下来有两个用处——证明
-    R5 确实没碰它，以及给 R6 留一个可对照的基线。
+    R5 只改今天会抛异常的路径，所以这里原本钉的是**当前错误行为**——"AB" 被逐
+    字符拆成 ['A','B']，凭空造出一个模型从未声明的 gap。那是语义纠正而不是崩溃
+    加固，按约定单独成phase。
+
+    R6 做了那次纠正，于是本节的断言按审计列出的方式逐条反转。保留这一节而不是
+    删掉它，是因为它记录的是一个真实发生过的缺陷：读到这里的人应该看见它曾经
+    怎样表现、为什么当时没有顺手改掉、以及现在被改成了什么。
+
+    畸形形状的完整矩阵在 test_x1d_legacydiag46_r6_gap_separates.py。
     """
 
     def gaps_for(self, separates):
@@ -474,27 +480,35 @@ class TestSite7DeliberatelyUnchanged:
         state, _ = validate_state(raw, EV)
         return state.evidence_gaps
 
-    def test_a_string_is_still_split_into_characters(self):
-        """当前（错误的）行为：'AB' 造出一个模型从未声明的 gap。"""
-        assert self.gaps_for("AB") == [{"domain": "sweat",
-                                        "separates": ["A", "B"]}]
-        assert self.gaps_for("BA") == [{"domain": "sweat",
-                                        "separates": ["B", "A"]}]
-        assert self.gaps_for("A") == [{"domain": "sweat", "separates": ["A"]}]
+    def test_a_string_is_no_longer_split_into_characters(self):
+        """R5 之前：'AB' -> [{'separates': ['A','B']}]。R6 之后：没有 gap。"""
+        assert self.gaps_for("AB") == []
+        assert self.gaps_for("BA") == []
+        assert self.gaps_for("A") == []
+        assert self.gaps_for("AXB") == []
 
-    def test_a_set_is_still_accepted_here(self):
-        assert self.gaps_for({"A", "B"})[0]["domain"] == "sweat"
+    def test_a_set_is_no_longer_accepted_here(self):
+        """曾经被接受，且 [:2] 让保留哪两个名字变得不确定。"""
+        assert self.gaps_for({"A", "B"}) == []
 
-    def test_a_truthy_dict_still_degrades(self):
+    def test_a_truthy_mapping_no_longer_fabricates(self):
+        """dict 迭代的是键。{'A': 1} 曾经造出 separates=['A']。
+
+        R5 那版断言用的是 {'a': 1}——键对不上，改前改后都得空，所以它其实从来
+        没有钉住这个缺陷。这里换成会匹配的键。
+        """
+        assert self.gaps_for({"A": 1}) == []
         assert self.gaps_for({"a": 1}) == []
 
     @pytest.mark.parametrize("value", [7, True], ids=["int", "bool"])
-    def test_it_still_raises_and_r5_did_not_fix_that(self, value):
-        """站点 7 的崩溃面仍然开着。这是 R5 明确划出去的范围。"""
+    def test_it_no_longer_raises(self, value):
+        """站点 7 的崩溃面曾经开着；R5 明确划出去，R6 关上。"""
         raw = raw_state()
         raw["evidence_gaps"][0]["separates"] = value
-        with pytest.raises(TypeError):
-            validate_state(raw, EV)
+        state, _ = validate_state(raw, EV)      # 抛出即失败
+        assert state is not None
+        assert state.evidence_gaps == []
+        assert len(state.hypotheses) == 2
 
 
 # ======================================================================
