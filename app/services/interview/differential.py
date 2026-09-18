@@ -40,7 +40,7 @@ interview the patient sees questions, not a running theory about themselves.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.schemas.reasoning import (
     EvidenceRef,
@@ -157,10 +157,49 @@ def resolve_ref(ref: Any, evidence: ResolvableEvidence) -> Optional[EvidenceRef]
     return None
 
 
+def _as_sequence(raw: Any) -> Sequence[Any]:
+    """A model-supplied collection, or nothing. Never raises.
+
+    X1D-LEGACYDIAG4.6-R5. Every list-shaped field in this module was read as
+    ``(x.get(field) or [])[:cap]``. ``or []`` only catches FALSY input. A
+    truthy non-sequence went straight to the slice and raised -- 7 and True
+    gave TypeError, a non-empty dict gave KeyError (dict[slice]), a set gave
+    TypeError. Nothing in validate_state catches, so the exception left the
+    function entirely and the assembler discarded the WHOLE working
+    differential behind DIFFERENTIAL_STATE_UNAVAILABLE. One malformed
+    decorative field cost every hypothesis, every citation and every
+    discriminator the model had got right.
+
+    The test is the one _names (4.5) and also_resolved_by (R4) already apply,
+    so this names a convention that was here twice rather than inventing one.
+
+    list and tuple only, and deliberately nothing else. A bare string is
+    iterable: treating "nose" as ["n","o","s","e"] -- or as ["nose"] -- would
+    be new behaviour rather than hardening, and the contract says array at
+    every site that calls this.
+    """
+    return raw if isinstance(raw, (list, tuple)) else ()
+
+
+def _collection_discarded(raw: Any) -> bool:
+    """True when _as_sequence threw content away rather than finding none.
+
+    One site needs the distinction. A malformed evidence collection must not
+    become indistinguishable from cleanly absent evidence: the model supplied
+    something under supporting_evidence and none of it could be resolved,
+    which is exactly what EVIDENCE_REF_UNRESOLVED exists to say.
+
+    The falsy shapes -- missing, None, "", {}, 0, False -- are deliberately
+    not reported. They raise nothing today and emit nothing today. R5 changes
+    what happens where the current code CRASHES, and nothing else.
+    """
+    return bool(raw) and not isinstance(raw, (list, tuple))
+
+
 def _resolve_all(refs: Any, evidence: ResolvableEvidence) -> List[EvidenceRef]:
     out: List[EvidenceRef] = []
     seen: set = set()
-    for ref in (refs or [])[:MAX_EVIDENCE_PER_SIDE * 2]:
+    for ref in _as_sequence(refs)[:MAX_EVIDENCE_PER_SIDE * 2]:
         resolved = resolve_ref(ref, evidence)
         if resolved is None:
             continue
@@ -314,20 +353,34 @@ def validate_state(
         return None, notes
 
     pending: List[Dict[str, Any]] = []
-    for item in (raw.get("hypotheses") or [])[:MAX_HYPOTHESES * 2]:
+    # X1D-LEGACYDIAG4.6-R5 (site 2). Degrading to () reaches the existing
+    # `if not hypotheses: return None` below, so a malformed hypotheses field
+    # yields the same state=None that a missing one already yields -- reached
+    # deterministically instead of by an exception the assembler has to catch.
+    for item in _as_sequence(raw.get("hypotheses"))[:MAX_HYPOTHESES * 2]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("pattern_name") or "").strip()
         if not name:
             continue
 
-        supporting = _resolve_all(item.get("supporting_evidence"), evidence)
-        contradicting = _resolve_all(item.get("contradicting_evidence"),
-                                     evidence)
-        dropped = (len(item.get("supporting_evidence") or [])
-                   + len(item.get("contradicting_evidence") or [])
+        # X1D-LEGACYDIAG4.6-R5 (sites 3 and 4). Each side was read TWICE -- once
+        # through _resolve_all and once through len() for the dropped counter --
+        # so hardening the helper alone would have left len(7) raising here.
+        raw_supporting = item.get("supporting_evidence")
+        raw_contradicting = item.get("contradicting_evidence")
+        supporting = _resolve_all(raw_supporting, evidence)
+        contradicting = _resolve_all(raw_contradicting, evidence)
+        dropped = (len(_as_sequence(raw_supporting))
+                   + len(_as_sequence(raw_contradicting))
                    - len(supporting) - len(contradicting))
-        if dropped > 0:
+        # A malformed collection is not absent evidence. The model cited
+        # something and none of it survived, which is the same operational fact
+        # the counter already reports -- so it reports it by the same name
+        # rather than degrading silently into "this hypothesis cited nothing".
+        if (dropped > 0
+                or _collection_discarded(raw_supporting)
+                or _collection_discarded(raw_contradicting)):
             notes.append("EVIDENCE_REF_UNRESOLVED")
 
         standing = str(item.get("standing") or "PLAUSIBLE")
@@ -348,7 +401,7 @@ def validate_state(
         # real competition can only be judged once every hypothesis in this
         # state is known.
         raw_discriminators = [
-            e for e in (item.get("unresolved_discriminators") or [])
+            e for e in _as_sequence(item.get("unresolved_discriminators"))
             [:MAX_DISCRIMINATORS] if isinstance(e, dict)]
 
         pending.append({
@@ -385,7 +438,7 @@ def validate_state(
 
     gaps = []
     named = {h.pattern_name for h in hypotheses}
-    for entry in (raw.get("evidence_gaps") or [])[:MAX_GAPS]:
+    for entry in _as_sequence(raw.get("evidence_gaps"))[:MAX_GAPS]:
         if not isinstance(entry, dict):
             continue
         domain = str(entry.get("domain") or "").strip()
