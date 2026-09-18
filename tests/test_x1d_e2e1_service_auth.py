@@ -13,6 +13,7 @@ clears the cache before building its own ``TestClient``.
 
 import importlib
 import os
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,7 +69,33 @@ def _gen_body():
 
 
 def _gen_headers(token=None):
-    h = {"Idempotency-Key": "e2e1-" + (token or "anon")[:16]}
+    """Headers for one generate call, with an idempotency key unique to it.
+
+    X1D-TESTISO1. This key used to be a constant: "e2e1-" + the first 16
+    characters of whatever token the case passed. The suite runs against the
+    developer database in the repo root -- conftest sets the environment but
+    says nothing about DATABASE_URL, so every run reads and writes
+    ./xerbs_ai_v2.db -- and a constant key means every run after the first
+    collides with a row the first one left behind.
+
+    That is not hypothetical. The stored row dates from 2026-09-13; the intake
+    schema has since gained interview_depth and interview_state, so the
+    request hash it was written with no longer matches the hash of the same
+    body today. generate() compared the two, found them different, and raised
+    IdempotencyConflictError -- a 409 where the test asserts 200, permanently,
+    on any machine whose database holds that row.
+
+    The endpoint was right every time. A key that is reused with a changed
+    payload SHOULD conflict; that is the guarantee it exists to provide. The
+    test was wrong to reuse one. A fresh key per call means each case asserts
+    what it means to assert -- that a valid credential is accepted -- and
+    nothing about what a previous run happened to leave in a database.
+
+    The key also no longer carries the first 16 characters of the credential
+    into a persisted row, which a test token made harmless and which was never
+    a good shape to keep.
+    """
+    h = {"Idempotency-Key": "e2e1-%s" % uuid4().hex[:16]}
     if token:
         h["Authorization"] = f"Bearer {token}"
     return h
@@ -195,39 +222,86 @@ class TestGovernanceAuthorization:
                       headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 403
 
 
+_ABSENT = object()
+
+
+@pytest.fixture
+def _bootstrap_store(tmp_path):
+    """A private database for the bootstrap test, built by injection.
+
+    X1D-TESTISO1. The bootstrap test must not write the golden-corpus
+    lifecycle into whatever database the rest of the suite is using, so it
+    needs one of its own. It used to get that by setting DATABASE_URL and
+    reloading app.db.session, persistent_clinical and golden_corpus -- with
+    the cleanup written as four statements at the end of the test body, so it
+    ran only if every assertion above it had passed.
+
+    Restoring that afterwards is not actually possible. importlib.reload
+    re-executes a module in its existing namespace, so PersistentWorkflowError
+    becomes a NEW class object while app/api/clinical_knowledge.py keeps
+    catching the one it imported at startup. The store then raises a class no
+    `except` clause matches, and endpoints that should answer 404 or 409
+    answer 500 instead. That is what turned one failure in
+    test_phase12c2d2.py into twelve when this file ran first, and no amount of
+    reloading afterwards repairs it: each reload mints another class.
+
+    So nothing global is touched. PersistentClinicalStore already accepts a
+    session factory, and bootstrap_golden_corpus works entirely through the
+    store it is given, so the test can be handed its own engine and leave
+    DATABASE_URL, the lru_cache'd engine and factory, and every class identity
+    exactly as it found them. The teardown asserts precisely that -- not that
+    global state was put back, but that it was never moved.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.bootstrap.golden_corpus as gc
+    import app.db.session as session_mod
+    import app.services.knowledge.persistent_clinical as pc
+    from app.db import models  # noqa: F401 - registers the tables
+    from app.db.base import Base
+
+    before_env = os.environ.get("DATABASE_URL", _ABSENT)
+    before_url = str(session_mod.get_engine().url)
+    before_error = pc.PersistentWorkflowError
+    before_store = pc.PersistentClinicalStore
+
+    engine = create_engine(
+        "sqlite:///%s/boot.db" % tmp_path.as_posix(),
+        connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    try:
+        yield gc, pc, factory
+    finally:
+        engine.dispose()
+        assert os.environ.get("DATABASE_URL", _ABSENT) == before_env, (
+            "DATABASE_URL was modified")
+        assert str(session_mod.get_engine().url) == before_url, (
+            "the process-wide engine was moved")
+        assert pc.PersistentWorkflowError is before_error, (
+            "persistent_clinical was reloaded; handlers now mismatch")
+        assert pc.PersistentClinicalStore is before_store, (
+            "persistent_clinical was reloaded")
+
+
 class TestGoldenCorpusBootstrap:
-    def test_bootstrap_is_idempotent_and_reaches_eligibility(self, tmp_path):
+    def test_bootstrap_is_idempotent_and_reaches_eligibility(self, _bootstrap_store):
         """The bootstrap must drive the real lifecycle and be safe to re-run."""
-        os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path.as_posix()}/boot.db"
-        from app.core import config
+        gc, pc, factory = _bootstrap_store
 
-        config.get_settings.cache_clear()
-
-        import app.db.session as session_mod
-
-        importlib.reload(session_mod)
-        session_mod.init_db()
-
-        import app.services.knowledge.persistent_clinical as pc
-
-        importlib.reload(pc)
-        import app.bootstrap.golden_corpus as gc
-
-        importlib.reload(gc)
-
-        first = gc.bootstrap_golden_corpus(pc.PersistentClinicalStore())
+        first = gc.bootstrap_golden_corpus(
+            pc.PersistentClinicalStore(session_factory=factory))
         assert first["clinical_ranking_eligible"] is True, first
         assert first["source_status_after"] == "REVIEWED"
         assert first["formula_status_after"] == "REVIEWED"
         assert "ingested_formula_as_draft" in first["actions"]
 
-        second = gc.bootstrap_golden_corpus(pc.PersistentClinicalStore())
+        second = gc.bootstrap_golden_corpus(
+            pc.PersistentClinicalStore(session_factory=factory))
         assert second["entity_id"] == first["entity_id"], "re-run must not duplicate"
         assert second["clinical_ranking_eligible"] is True
         assert "already_eligible" in second["actions"]
-
-        os.environ.pop("DATABASE_URL", None)
-        config.get_settings.cache_clear()
 
     def test_bootstrap_embeds_no_credential(self):
         import app.bootstrap.golden_corpus as gc
