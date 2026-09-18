@@ -249,8 +249,31 @@ def _validate_discriminator(entry: Any, live: set) -> Optional[Dict[str, Any]]:
     # X1D-LEGACYDIAG4.6: the other domains that would settle the same pair.
     # Named by the model, canonicalized here, and never extended by us -- the
     # deterministic layer orders what it is given and invents nothing.
+    #
+    # X1D-LEGACYDIAG4.6-R4: a malformed field costs its own value, not the turn's.
+    #
+    # `or []` only catches FALSY input. A truthy non-sequence reached the slice
+    # and raised -- 7 and True gave TypeError, a non-empty dict gave KeyError
+    # (dict[slice]), a set gave TypeError. Nothing here catches, so it
+    # propagated out of validate_state to the assembler, which discarded the
+    # ENTIRE working differential and flagged DIFFERENTIAL_STATE_UNAVAILABLE.
+    # One malformed enrichment field cost every hypothesis, every citation and
+    # every discriminator the model had got right.
+    #
+    # This is the guard _names already applies to separates,
+    # if_present_supports and if_absent_supports; also_resolved_by was the one
+    # list-shaped field in this function without it. Degrading to [] keeps the
+    # discriminator and judges it on what survived, which is the rule
+    # validate_state states for itself: fail toward less, never toward nothing.
+    #
+    # A bare "nose" stays [] rather than becoming ["nose"]. Accepting a string
+    # where the contract says array would be a new behaviour, not a hardening,
+    # and _names rejects that same shape.
+    raw_alternatives = entry.get("also_resolved_by")
+    if not isinstance(raw_alternatives, (list, tuple)):
+        raw_alternatives = []
     alternatives = []
-    for extra in (entry.get("also_resolved_by") or [])[:MAX_DISCRIMINATORS * 2]:
+    for extra in raw_alternatives[:MAX_DISCRIMINATORS * 2]:
         candidate = normalize_clinical_domain(extra)
         if candidate and candidate != domain and candidate not in alternatives:
             alternatives.append(candidate)

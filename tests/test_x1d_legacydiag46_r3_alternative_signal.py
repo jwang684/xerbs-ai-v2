@@ -251,22 +251,25 @@ class TestInvalidAlternativesGainNothing:
             assert None not in gaps
 
     @pytest.mark.parametrize("junk", [7, True])
-    def test_a_non_sequence_alternative_still_raises_today(self, junk):
-        """既有缺陷，本阶段刻意不修，只是钉住它别被悄悄改掉。
+    def test_a_non_sequence_alternative_no_longer_raises(self, junk):
+        """X1D-LEGACYDIAG4.6-R4 把这里从抛异常改成降级。
 
-        _validate_discriminator 对 also_resolved_by 直接切片：
+        R3 阶段这条用例钉的是当时的缺陷：also_resolved_by 收到 int 或 bool
+        会抛 TypeError，assembler 兜住之后把**整份**工作鉴别丢掉。R4 给它补
+        上了 _names 早就在用的类型判断，于是畸形字段只赔上它自己。
 
-            (entry.get("also_resolved_by") or [])[:MAX_DISCRIMINATORS * 2]
-
-        送进一个 int 或 bool 就会抛 TypeError。assembler 外层有兜底，所以
-        一轮问诊不会失败，但**整份**工作鉴别会被丢掉，而不只是这一条畸形的
-        鉴别项。修它属于另一个阶段的范围。
+        断言随行为一起翻转，覆盖范围只增不减：下面 R4 的用例矩阵比这一条
+        严得多。
         """
         entry = {"domain": "thirst", "separates": ["A", "B"],
                  "if_present_supports": ["A"], "if_absent_supports": ["B"],
                  "rationale": "r", "also_resolved_by": junk}
-        with pytest.raises(TypeError):
-            build(hyp("A", "PRIMARY_WORKING", [entry]), hyp("B"))
+        state, _ = build(hyp("A", "PRIMARY_WORKING", [entry]), hyp("B"))
+        assert state is not None
+        kept = state.hypotheses[0].unresolved_discriminators
+        assert len(kept) == 1
+        assert kept[0]["domain"] == "thirst"          # 主鉴别域还在
+        assert kept[0]["also_resolved_by"] == []      # 只有替代域清空
 
 
 # ======================================================================
