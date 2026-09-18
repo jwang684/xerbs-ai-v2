@@ -447,6 +447,26 @@ def signals_from_state(
         for entry in hypothesis.unresolved_discriminators:
             if isinstance(entry, dict):
                 gaps.add(normalize_clinical_domain(entry.get("domain")))
+                # X1D-LEGACYDIAG4.6-R3: the alternatives are gaps too.
+                #
+                # 4.6 let also_resolved_by widen ELIGIBILITY -- an alternative
+                # enters required_domains and gets a governed question -- but
+                # never told the ranker about it, so it arrived scored as
+                # though the differential had not mentioned it. The adaptive
+                # floor sits between eligibility and ordering, and staging
+                # measured the consequence twice: 咽喉 scored 36 against a
+                # floor of 40 and was discarded before preference could
+                # compare it, once leaving exactly budget-many survivors and
+                # nothing for 4.6 to decide.
+                #
+                # Saying a domain would settle the same live pair IS the
+                # claim gap_domains already encodes, so this reuses that
+                # category and its weight rather than inventing a second one.
+                # Only validated entries reach here, so an alternative that
+                # failed normalisation, or belonged to a discriminator with
+                # no live competition, still contributes nothing.
+                for extra in entry.get("also_resolved_by") or []:
+                    gaps.add(normalize_clinical_domain(extra))
 
     pairs = [({domain_for_ref(r) for r in h.supporting_evidence},
               {domain_for_ref(r) for r in h.contradicting_evidence})
