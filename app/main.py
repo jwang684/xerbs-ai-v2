@@ -12,7 +12,6 @@ from app.api.interviews import router as interview_router
 from app.api.base44 import router as base44_router
 from app.core.config import get_settings
 from app.core.service_auth import require_service_auth
-from app.db.session import init_db
 from app.services.knowledge.persistent_seed import seed_legacy_formula_fixtures
 
 settings=get_settings()
@@ -30,7 +29,24 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
-init_db(); seed_legacy_formula_fixtures()
+# X1D-MIGRATESTART1 P1: Alembic owns the schema, and now owns it alone.
+#
+# This line used to read `init_db(); seed_legacy_formula_fixtures()`, where
+# init_db() called Base.metadata.create_all(). That made every import of this
+# module a potential DDL event, and it gave the schema a second owner that
+# never stamps alembic_version -- so a database could end up physically
+# correct while Alembic believed it was at a different revision, or empty.
+#
+# create_all also cannot do the one thing that matters here: it skips any
+# table that already exists, columns and all, so it silently did nothing on a
+# migrated database while still claiming ownership. Alembic is the mechanism
+# that actually evolves this schema, and 0001-0007 already build it from base.
+#
+# The seed stays. It is DML -- it reads and inserts rows through the ordinary
+# session factory and issues no DDL -- so it needs the tables to EXIST, not to
+# have just been created. In every deployed environment `alembic upgrade head`
+# runs ahead of uvicorn in the container command, so they do.
+seed_legacy_formula_fixtures()
 app=FastAPI(title=settings.app_name,version=settings.app_version)
 
 # Service authentication (X1D-E2E1).
