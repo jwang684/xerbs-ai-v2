@@ -88,6 +88,13 @@ class ReviewEvent(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # X1D-AUDITORDER1. version is the causal order of this entity's lifecycle:
+    # _transition bumps it exactly once per governed change and stamps the event
+    # with it. Ordering read it that way long before anything enforced it, and
+    # two concurrent writers could both commit the same number -- the optimistic
+    # check reads without a lock. This makes the claim the database's to keep.
+    __table_args__ = (UniqueConstraint("entity_id", "version",
+                                       name="uq_review_event_entity_version"),)
 
 
 class SourceReviewEvent(Base):
@@ -108,6 +115,8 @@ class SourceReviewEvent(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    __table_args__ = (UniqueConstraint("source_id", "version",
+                                       name="uq_source_review_event_source_version"),)
 
 
 class AuditEvent(Base):
@@ -121,6 +130,24 @@ class AuditEvent(Base):
     actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # X1D-AUDITORDER1. The aggregate's version, copied here so this table can be
+    # ordered causally instead of by (created_at, event_id) -- a random uuid
+    # tiebreaker that returned SOURCE_APPROVED before SOURCE_CREATED whenever the
+    # clock tied, which on a 1-2ms tick it regularly did.
+    #
+    # Nullable on purpose: telemetry and gap events belong to no aggregate, have
+    # no causal position, and are never returned by an ordered query. NULLs are
+    # distinct under UNIQUE in both SQLite and PostgreSQL, so they coexist freely.
+    #
+    # Internal. Not exposed by SourceAuditEventRecord and not part of any API
+    # response -- the ordering it produces is the visible effect, not the number.
+    version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    __table_args__ = (
+        UniqueConstraint("source_id", "version",
+                         name="uq_audit_event_source_version"),
+        UniqueConstraint("entity_id", "version",
+                         name="uq_audit_event_entity_version"),
+    )
 
 class ClinicalRelationship(Base):
     __tablename__ = "clinical_relationship"

@@ -433,7 +433,8 @@ def test_z_migration_from_0005_to_head_succeeds(tmp_path):
     con.commit(); con.close()
     assert 'source_id' not in cols_before
     _alembic(db,'upgrade','head')
-    assert '0006_phase12c2d2' in _alembic(db,'current')
+    # X1D-AUDITORDER1: at head, not a named historical revision.
+    assert '(head)' in _alembic(db,'current')
     con=sqlite3.connect(db)
     try:
         cols={r[1]:r[2] for r in con.execute('PRAGMA table_info(audit_event)')}

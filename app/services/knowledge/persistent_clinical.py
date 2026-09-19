@@ -209,8 +209,14 @@ class PersistentClinicalStore:
         """Persisted source_review_event rows, chronological."""
         with self.Session() as s:
             self._get_source(s, source_id)
+            # X1D-AUDITORDER1: version, not (created_at, event_id). The old
+            # tiebreaker was a random uuid, so whenever two transitions shared a
+            # timestamp -- routine on a 1-2ms clock -- this returned a governance
+            # trail in an order the lifecycle never happened in. The query is
+            # already filtered to one source, and version is that source's causal
+            # counter, unique per source and now enforced as such.
             rows = s.scalars(select(SourceReviewEvent).where(SourceReviewEvent.source_id == source_id)
-                             .order_by(SourceReviewEvent.created_at, SourceReviewEvent.event_id)).all()
+                             .order_by(SourceReviewEvent.version)).all()
             return [SourceReviewEventRecord(
                 event_id=r.event_id, source_id=r.source_id, action=r.action, actor_id=r.actor_id,
                 actor_role=r.actor_role, from_status=r.from_status, to_status=r.to_status,
@@ -220,8 +226,12 @@ class PersistentClinicalStore:
         """audit_event rows whose structured source_id matches. Nothing inferred."""
         with self.Session() as s:
             self._get_source(s, source_id)
+            # X1D-AUDITORDER1: see get_source_reviews. Every row this filter can
+            # return was written by _add_source_event and carries the source's
+            # version; telemetry and gap events have no source_id and never
+            # appear here, so a NULL version is unreachable from this query.
             rows = s.scalars(select(AuditEvent).where(AuditEvent.source_id == source_id)
-                             .order_by(AuditEvent.created_at, AuditEvent.event_id)).all()
+                             .order_by(AuditEvent.version)).all()
             return [SourceAuditEventRecord(
                 event_id=r.event_id, event_type=r.event_type, source_id=r.source_id,
                 actor_id=r.actor_id, payload=r.payload or {}, created_at=r.created_at) for r in rows]
@@ -288,7 +298,12 @@ class PersistentClinicalStore:
 
     def audit(self, entity_type=None, entity_id=None):
         with self.Session() as s:
-            stmt=select(ReviewEvent).order_by(ReviewEvent.created_at,ReviewEvent.event_id)
+            # X1D-AUDITORDER1: entity_id and version, not a random uuid. This
+            # query may be unfiltered, and version is only meaningful within one
+            # entity -- so events are grouped by entity and ordered causally
+            # inside each. created_at leads so the overall shape stays
+            # chronological for a reader scanning everything at once.
+            stmt=select(ReviewEvent).order_by(ReviewEvent.created_at,ReviewEvent.entity_id,ReviewEvent.version)
             if entity_type is not None: stmt=stmt.where(ReviewEvent.entity_type==entity_type.value)
             if entity_id is not None: stmt=stmt.where(ReviewEvent.entity_id==entity_id)
             rows=s.scalars(stmt).all()
@@ -385,9 +400,13 @@ class PersistentClinicalStore:
             event_id=f"srcevt-{uuid4().hex[:16]}", source_id=row.source_id, action=action,
             actor_id=actor_id, actor_role=actor_role, from_status=from_status,
             to_status=to_status, version=row.version, notes=notes))
+        # X1D-AUDITORDER1: version is carried in a column, not only in the
+        # payload, so this table can be ordered causally. Same number, same
+        # transition, same transaction -- the payload copy is left untouched
+        # because it is what the backfill reconstructs history from.
         s.add(AuditEvent(
             event_id=f"aud-{uuid4().hex[:16]}", event_type=f"SOURCE_{action}", entity_id=None,
-            source_id=row.source_id, actor_id=actor_id,
+            source_id=row.source_id, actor_id=actor_id, version=row.version,
             payload={"from_status": from_status, "to_status": to_status, "version": row.version}))
 
     @staticmethod
@@ -468,4 +487,4 @@ class PersistentClinicalStore:
         if not e or e.entity_type != entity_type.value: raise PersistentWorkflowError("Clinical corpus entity not found")
         return e
     def _add_event(self,s,typ,eid,action,actor,frm,to,ver,notes,role,payload):
-        rid=f"evt-{uuid4().hex[:16]}"; s.add(ReviewEvent(event_id=rid,entity_id=eid,entity_type=typ,action=action,actor_id=actor,actor_role=role,from_status=frm,to_status=to,version=ver,notes=notes)); s.add(AuditEvent(event_id=f"aud-{uuid4().hex[:16]}",event_type=action,entity_id=eid,actor_id=actor,payload=payload or {"from_status":frm,"to_status":to,"version":ver}))
+        rid=f"evt-{uuid4().hex[:16]}"; s.add(ReviewEvent(event_id=rid,entity_id=eid,entity_type=typ,action=action,actor_id=actor,actor_role=role,from_status=frm,to_status=to,version=ver,notes=notes)); s.add(AuditEvent(event_id=f"aud-{uuid4().hex[:16]}",event_type=action,entity_id=eid,actor_id=actor,version=ver,payload=payload or {"from_status":frm,"to_status":to,"version":ver}))

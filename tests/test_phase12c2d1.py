@@ -172,7 +172,13 @@ def test_audit_event_entity_id_is_never_widened(migrated):
     """Phase 12C-2D2 added a structured source_id column instead of widening
     entity_id. entity_id must stay String(64) and stay entity-only."""
     cols=_cols(migrated,'audit_event')
-    assert set(cols)=={'event_id','event_type','entity_id','source_id','actor_id','payload','created_at'}
+    # X1D-AUDITORDER1: subset, not equality. This test exists to prove entity_id
+    # was never widened, which the explicit assertions below say directly. An
+    # exact column set additionally froze the table against every future
+    # migration -- 0007 adds an internal `version` column and broke it without
+    # touching anything this test is about.
+    assert {'event_id','event_type','entity_id','source_id','actor_id','payload',
+            'created_at'} <= set(cols)
     assert cols['entity_id']['type']=='VARCHAR(64)'      # never widened
     assert cols['source_id']['type']=='VARCHAR(128)'     # structured Source identity
     assert cols['source_id']['notnull'] is False
@@ -186,7 +192,10 @@ def test_audit_event_entity_id_is_never_widened(migrated):
 def test_m_clean_alembic_upgrade_base_to_head(tmp_path):
     db=tmp_path/'clean.db'
     _alembic(db,'upgrade','head')
-    assert '0006_phase12c2d2' in _alembic(db,'current')
+    # X1D-AUDITORDER1: assert we ARE at head, rather than naming the revision
+    # that happened to be head when this was written. The substance of the test
+    # is the schema assertions below.
+    assert '(head)' in _alembic(db,'current')
     con=sqlite3.connect(db)
     try:
         tables={r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
