@@ -7,12 +7,28 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 COPY app ./app
-# Release sequence: migrate, establish the governed Golden Corpus, then serve.
+# Release sequence: establish the governed Golden Corpus, then serve.
+#
+# Migration is deliberately absent from this command. `alembic upgrade head`
+# now runs as the platform pre-deploy step, which executes once per deployment
+# and gates the application container: a migration that exits non-zero fails
+# the deployment before this command is ever reached, and the previously
+# healthy deployment keeps serving. Running it here instead meant re-running it
+# on every ordinary restart -- idempotent at one replica, a race at more than
+# one -- and it is the pre-deploy stage, not the app container, that owns the
+# schema now.
+#
+# The consequence is a coupling this image cannot enforce on its own: a
+# deployment of this code whose captured manifest does not carry
+# `alembic upgrade head` as its preDeployCommand has NO migration owner at all.
+# The deployment manifest is authoritative for that, and it is checked before
+# any release of this image is accepted.
 #
 # The corpus bootstrap runs here because a target environment has no other way
 # to reach it: governance mutation endpoints are deliberately closed, and the
 # database is private. It is idempotent, so a restart re-verifies rather than
 # duplicates, and it walks the real review lifecycle rather than writing SQL.
+# It needs the tables to EXIST, which pre-deploy has already guaranteed.
 #
 # It runs before uvicorn on purpose. If the corpus cannot be established the
 # service does not start, because a running service with no governed formula
@@ -29,4 +45,4 @@ COPY app ./app
 # refused at the TCP layer. app.server binds both families and hands the
 # sockets to one uvicorn server; its module docstring explains why that is two
 # sockets rather than one dual-stack socket. PORT handling is unchanged.
-CMD ["sh", "-c", "alembic upgrade head && python -c \"from app.bootstrap.golden_corpus import bootstrap_golden_corpus as b; import json; print('golden_corpus:', json.dumps(b(), ensure_ascii=False))\" && python -m app.server"]
+CMD ["sh", "-c", "python -c \"from app.bootstrap.golden_corpus import bootstrap_golden_corpus as b; import json; print('golden_corpus:', json.dumps(b(), ensure_ascii=False))\" && python -m app.server"]

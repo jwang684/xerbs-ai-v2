@@ -14,13 +14,19 @@ create_all 还做不到真正需要的那件事：表一旦存在它就整张跳
 真正演进这套 schema 的是 Alembic，0001-0007 已经能从 base 建到 head。本阶段
 只做一件事：把运行时的 create_all 拿掉，让 Alembic 成为唯一的主人。
 
-Alembic 本身**没有**移动。它仍然在 Dockerfile 的启动链里，容器每次启动都跑。
-把它挪到 preDeployCommand 是下一个 phase 的事，本文件最后一节把"还没搬"这件事
-也钉住，免得两件事被悄悄合并。
+Alembic 现在也不在容器启动链里了（P2G-B）。`alembic upgrade head` 改由平台的
+preDeploy 阶段执行：每次部署跑一次，失败就直接让这次部署 FAILED，应用容器根本
+不会被创建，原来健康的部署继续服务。放在 CMD 里意味着每次普通 restart 都会重跑
+一遍——单副本时只是幂等，多副本时就是竞争。
+
+代价是一个镜像自己管不住的耦合：这份代码如果被部署时，捕获的 manifest 里没有
+`alembic upgrade head` 这个 preDeployCommand，那这次部署就**没有任何** schema
+主人。deployment manifest 是这件事的权威，本文件最后一节把"CMD 里不许再有
+Alembic"钉住，manifest 那一半由发布流程在部署前验。
 
 种子函数留在原地。它是 DML——通过普通的 session factory 读写行，不发任何 DDL——
-所以它要的是表**存在**，而不是表刚刚被建出来。部署环境里 `alembic upgrade head`
-在应用服务器启动器（`python -m app.server`）之前跑，表就是存在的。
+所以它要的是表**存在**，而不是表刚刚被建出来。部署环境里 preDeploy 的
+`alembic upgrade head` 在应用容器启动之前就跑完了，表就是存在的。
 """
 import json
 import os
@@ -156,23 +162,32 @@ class TestSeedRemainsDmlOnly:
 
 
 # ======================================================================
-# 四、Alembic 仍然是那个主人，而且还没有被搬走
+# 四、Alembic 仍然是那个主人，但主人已经搬到 preDeploy 了
 # ======================================================================
 
-class TestAlembicRemainsTheOwnerAndHasNotMovedYet:
-    """P1 的边界：只去掉第二个主人，不动 Alembic 的位置。
+class TestAlembicIsTheOwnerAndHasMovedToPreDeploy:
+    """P2G-B：迁移离开应用启动链，改由平台 preDeploy 独家执行。
 
-    下一个 phase 才会把 `alembic upgrade head` 从容器启动链挪到
-    preDeployCommand。这里把"还没挪"钉住，两件事就不会被合并成一次改动而无人
-    察觉。
+    这里只能钉住能从仓库里看到的那一半——应用 CMD 不再迁移。另一半（部署的
+    captured manifest 必须带 `alembic upgrade head`）不在仓库里，由发布流程在
+    部署前验；两半都成立才有主人。
     """
 
-    def test_the_container_command_still_runs_alembic_first(self):
+    def _cmd(self):
         with open(os.path.join(REPO, "Dockerfile"), encoding="utf-8") as fh:
             dockerfile = fh.read()
-        assert "alembic upgrade head" in dockerfile
-        cmd = [l for l in dockerfile.splitlines() if l.startswith("CMD")][0]
-        assert cmd.index("alembic upgrade head") < cmd.index("python -m app.server")
+        return [l for l in dockerfile.splitlines() if l.startswith("CMD")][0]
+
+    def test_the_container_command_no_longer_migrates(self):
+        """应用启动路径里不许再有迁移——否则每次 restart 都会重跑。"""
+        assert "alembic" not in self._cmd()
+
+    def test_the_container_command_still_bootstraps_before_serving(self):
+        """搬走的只有 Alembic：语料仍然在服务之前建立。"""
+        cmd = self._cmd()
+        assert "bootstrap_golden_corpus" in cmd
+        assert "python -m app.server" in cmd
+        assert cmd.index("bootstrap_golden_corpus") < cmd.index("python -m app.server")
 
     def test_migrations_reach_head_from_base(self):
         """Alembic 能从 base 建出整套 schema——这是它当主人的资格。"""
