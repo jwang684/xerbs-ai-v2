@@ -20,7 +20,7 @@ Alembic 本身**没有**移动。它仍然在 Dockerfile 的启动链里，容�
 
 种子函数留在原地。它是 DML——通过普通的 session factory 读写行，不发任何 DDL——
 所以它要的是表**存在**，而不是表刚刚被建出来。部署环境里 `alembic upgrade head`
-在 uvicorn 之前跑，表就是存在的。
+在应用服务器启动器（`python -m app.server`）之前跑，表就是存在的。
 """
 import json
 import os
@@ -172,7 +172,7 @@ class TestAlembicRemainsTheOwnerAndHasNotMovedYet:
             dockerfile = fh.read()
         assert "alembic upgrade head" in dockerfile
         cmd = [l for l in dockerfile.splitlines() if l.startswith("CMD")][0]
-        assert cmd.index("alembic upgrade head") < cmd.index("uvicorn")
+        assert cmd.index("alembic upgrade head") < cmd.index("python -m app.server")
 
     def test_migrations_reach_head_from_base(self):
         """Alembic 能从 base 建出整套 schema——这是它当主人的资格。"""

@@ -18,8 +18,15 @@ COPY app ./app
 # service does not start, because a running service with no governed formula
 # would answer consumers with an empty catalogue instead of an error.
 #
-# uvicorn binds :: rather than 0.0.0.0 because Railway's private network
-# (*.railway.internal) is IPv6-only: on 0.0.0.0 the public URL answers but
-# xerbs-core's private call is refused. A dual-stack container serves both
-# families from ::.
-CMD ["sh", "-c", "alembic upgrade head && python -c \"from app.bootstrap.golden_corpus import bootstrap_golden_corpus as b; import json; print('golden_corpus:', json.dumps(b(), ensure_ascii=False))\" && uvicorn app.main:app --host :: --port ${PORT:-8080}"]
+# app.server binds IPv4 and IPv6 explicitly instead of `uvicorn --host ::`.
+#
+# `--host ::` was chosen here because xerbs-core reaches this service over
+# Railway's private network, which does resolve an AAAA record. But that
+# network is not IPv6-only -- *.railway.internal resolves A as well -- and
+# `--host ::` is not dual-stack: asyncio sets IPV6_V6ONLY on the socket it
+# creates itself, so the container listened on IPv6 alone. The private call
+# kept working and Railway's public edge, which connects over IPv4, was
+# refused at the TCP layer. app.server binds both families and hands the
+# sockets to one uvicorn server; its module docstring explains why that is two
+# sockets rather than one dual-stack socket. PORT handling is unchanged.
+CMD ["sh", "-c", "alembic upgrade head && python -c \"from app.bootstrap.golden_corpus import bootstrap_golden_corpus as b; import json; print('golden_corpus:', json.dumps(b(), ensure_ascii=False))\" && python -m app.server"]
