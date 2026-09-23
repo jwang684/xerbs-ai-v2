@@ -11,6 +11,7 @@ from app.schemas.clinical_workflow import (
 from app.schemas.clinical_knowledge import SourceRef
 from app.services.knowledge.clinical_corpus import ClinicalKnowledgeCorpus
 from app.services.knowledge.clinical_workflow import ClinicalCorpusWorkflow, ClinicalWorkflowError
+from tests.governed_fixtures import approve_entity_for_test
 
 client = TestClient(app)
 
@@ -112,7 +113,7 @@ def test_phase5_api_ingest_review_history_round_trip():
     assert submit.status_code == 200
     assert submit.json()["review_status"] == "IN_REVIEW"
 
-    approve = client.post(f'/api/v1/knowledge/clinical/entities/formula/{entity_id}/review', json={"reviewer_id": "api-reviewer", "decision": "APPROVE"})
+    approve = approve_entity_for_test("formula", entity_id)
     assert approve.status_code == 200
     assert approve.json()["review_status"] == "REVIEWED"
     # Since Phase 12C-2D3 ranking also requires a REVIEWED Source; "api-source"
@@ -152,7 +153,7 @@ def test_reviewed_api_formula_enters_recommendation_pipeline():
     })
     entity_id = ingest.json()["created_entity_ids"][0]
     client.post(f'/api/v1/knowledge/clinical/entities/formula/{entity_id}/submit-review', json={"submitted_by": "pipeline-submit"})
-    client.post(f'/api/v1/knowledge/clinical/entities/formula/{entity_id}/review', json={"reviewer_id": "pipeline-reviewer", "decision": "APPROVE"})
+    approve_entity_for_test("formula", entity_id)
     ensure_source_reviewed(client, "pipeline-source")
 
     response = client.post('/api/v1/recommendations/generate', json={

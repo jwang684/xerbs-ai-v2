@@ -248,13 +248,17 @@ class SafetyEngine:
 
     def is_relationship_eligible(self, s, rel) -> bool:
         """THE relationship eligibility question, asked in one place."""
+        from app.services.governance.attested_review import (
+            has_verified_attested_approval)
         return lifecycle.is_governed_object_ranking_eligible(
             review_status=rel.review_status,
             governance_provenance=rel.governance_provenance,
             review_attestation_id=rel.review_attestation_id,
             reviewed_evidence_source_count=self._reviewed_evidence_count(
                 s, REL_OBJECT, rel.id),
-            retired_at=rel.retired_at)
+            retired_at=rel.retired_at,
+            has_verified_attested_approval=has_verified_attested_approval(
+                s, REL_OBJECT, rel.id, rel.version, rel.review_attestation_id))
 
     def is_safety_rule_effective(self, s, rule) -> bool:
         """THE safety-rule effectiveness question, asked in one place.
@@ -263,13 +267,17 @@ class SafetyEngine:
         an existing finding, so this cannot reduce blocking behaviour for any
         rule that was genuinely reviewed.
         """
+        from app.services.governance.attested_review import (
+            has_verified_attested_approval)
         return lifecycle.is_governed_object_ranking_eligible(
             review_status=rule.review_status,
             governance_provenance=rule.governance_provenance,
             review_attestation_id=rule.review_attestation_id,
             reviewed_evidence_source_count=self._reviewed_evidence_count(
                 s, RULE_OBJECT, rule.id),
-            retired_at=rule.retired_at)
+            retired_at=rule.retired_at,
+            has_verified_attested_approval=has_verified_attested_approval(
+                s, RULE_OBJECT, rule.id, rule.version, rule.review_attestation_id))
 
     def _herb_ids_for_formula(self,s,formula_id):
         rows=s.scalars(select(ClinicalRelationship).where(

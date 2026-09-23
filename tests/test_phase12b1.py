@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import approve_entity_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 from fastapi.testclient import TestClient
@@ -20,7 +21,7 @@ def approve(entity_type,eid):
     r=c.post(f'{BASE}/entities/{entity_type}/{eid}/submit-review',json={'submitted_by':'phase12b1'})
     assert r.status_code==200, r.text
     ver=r.json()['version']
-    r=c.post(f'{BASE}/entities/{entity_type}/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':ver})
+    r=approve_entity_for_test(entity_type, eid)
     assert r.status_code==200, r.text
     return r.json()['version']
 

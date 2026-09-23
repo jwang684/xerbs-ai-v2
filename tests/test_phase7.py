@@ -1,5 +1,6 @@
 import os
 from tests.governed_fixtures import simulate_core_attestation_for_test
+from tests.governed_fixtures import approve_entity_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from fastapi.testclient import TestClient
 from app.main import app
@@ -12,7 +13,7 @@ def ingest_review(entity_type,payload,source_id,name):
     eid=r.json()['created_entity_ids'][0]
     r=c.post(f'/api/v1/knowledge/clinical/entities/{entity_type}/{eid}/submit-review',json={'submitted_by':'phase7'}); assert r.status_code==200
     ver=r.json()['version']
-    r=c.post(f'/api/v1/knowledge/clinical/entities/{entity_type}/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':ver}); assert r.status_code==200, r.text
+    r=approve_entity_for_test(entity_type, eid); assert r.status_code==200, r.text
     return eid
 
 def ensure_source_reviewed(client_, source_id):

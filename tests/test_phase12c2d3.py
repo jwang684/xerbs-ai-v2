@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import approve_entity_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 
@@ -28,7 +29,7 @@ def ingest(source_ids,entity_type='formula',name=None):
 def approve_entity(eid,entity_type='formula'):
     r=c.post(f'{CLINICAL}/entities/{entity_type}/{eid}/submit-review',json={'submitted_by':'phase12c2d3'})
     assert r.status_code==200, r.text
-    r=c.post(f'{CLINICAL}/entities/{entity_type}/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
+    r=approve_entity_for_test(entity_type, eid)
     assert r.status_code==200, r.text
     return r.json()
 
@@ -83,7 +84,7 @@ def test_a_reviewed_entity_with_no_source_is_not_eligible():
     assert detail['source_count']==0
     # Cannot even be approved without a source; it is certainly not eligible.
     v=in_review_entity(eid)['version']
-    r=c.post(f'{CLINICAL}/entities/formula/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':v})
+    r=approve_entity_for_test('formula', eid)
     assert r.status_code==409
     assert eligible(eid) is False
 

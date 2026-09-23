@@ -286,22 +286,49 @@ def _bootstrap_store(tmp_path):
 
 
 class TestGoldenCorpusBootstrap:
-    def test_bootstrap_is_idempotent_and_reaches_eligibility(self, _bootstrap_store):
-        """The bootstrap must drive the real lifecycle and be safe to re-run."""
+    def test_bootstrap_drives_the_lifecycle_and_stops_before_approval(self, _bootstrap_store):
+        """The bootstrap drives the real lifecycle, is safe to re-run, and
+        stops at IN_REVIEW.
+
+        It used to approve the formula itself and this test asserted the
+        resulting eligibility. X1D-AIV2-ATTEST1 closed that: a machine
+        asserting clinical review authority is the failure the whole programme
+        exists to undo, and golden_corpus.py's own docstring already said the
+        human decision is external. So a freshly bootstrapped environment now
+        holds an IN_REVIEW formula that is NOT ranking-eligible -- which is the
+        honest state, because nobody has approved it there.
+        """
         gc, pc, factory = _bootstrap_store
 
         first = gc.bootstrap_golden_corpus(
             pc.PersistentClinicalStore(session_factory=factory))
-        assert first["clinical_ranking_eligible"] is True, first
         assert first["source_status_after"] == "REVIEWED"
-        assert first["formula_status_after"] == "REVIEWED"
+        assert first["formula_status_after"] == "IN_REVIEW"
+        assert first["clinical_ranking_eligible"] is False, first
         assert "ingested_formula_as_draft" in first["actions"]
+        assert "formula_awaiting_human_attestation" in first["actions"]
 
         second = gc.bootstrap_golden_corpus(
             pc.PersistentClinicalStore(session_factory=factory))
         assert second["entity_id"] == first["entity_id"], "re-run must not duplicate"
-        assert second["clinical_ranking_eligible"] is True
-        assert "already_eligible" in second["actions"]
+        assert second["formula_status_after"] == "IN_REVIEW"
+        assert second["clinical_ranking_eligible"] is False
+
+    def test_bootstrap_cannot_approve_anything(self, _bootstrap_store):
+        """No bootstrap path may confer human clinical approval."""
+        gc, pc, factory = _bootstrap_store
+        gc.bootstrap_golden_corpus(pc.PersistentClinicalStore(session_factory=factory))
+        src = open(gc.__file__, encoding="utf-8").read()
+        # Code only. The comment explaining what was removed legitimately names
+        # the call, and a test that forbids explaining a removal would be a
+        # test against documentation.
+        code = chr(10).join(l for l in src.splitlines()
+                            if not l.strip().startswith("#"))
+        assert "store.review(" not in code
+        assert "decision=ReviewDecision.APPROVE" not in code
+        from app.services.governance.identity import (
+            PRINCIPALS_THAT_MAY_HUMAN_APPROVE)
+        assert PRINCIPALS_THAT_MAY_HUMAN_APPROVE == frozenset()
 
     def test_bootstrap_embeds_no_credential(self):
         import app.bootstrap.golden_corpus as gc

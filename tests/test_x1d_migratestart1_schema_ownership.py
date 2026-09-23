@@ -200,9 +200,9 @@ class TestAlembicIsTheOwnerAndHasMovedToPreDeploy:
         heads = script.get_heads()
         assert len(heads) == 1, heads
         chain = list(script.walk_revisions("base", heads[0]))
-        assert len(chain) >= 8
+        assert len(chain) >= 9
         # X1D-AIV2-GOV2-C1 added 0008. The assertion pins the head by
         # name rather than counting, so a new migration has to be
         # declared here deliberately rather than slipping in.
-        assert heads[0] == "0008_x1d_gov2c1"
-        assert "0007_x1d_auditorder1" in {r.revision for r in chain}
+        assert heads[0] == "0009_x1d_attest1"
+        assert {"0007_x1d_auditorder1", "0008_x1d_gov2c1"} <= {r.revision for r in chain}

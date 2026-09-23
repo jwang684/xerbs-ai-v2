@@ -53,8 +53,6 @@ from app.schemas.clinical_workflow import (
     ClinicalEntityType,
     IngestionBatchRequest,
     IngestionItem,
-    ReviewActionRequest,
-    ReviewDecision,
 )
 from app.services.knowledge.persistent_clinical import (
     PersistentClinicalStore,
@@ -220,25 +218,19 @@ def bootstrap_golden_corpus(store: PersistentClinicalStore | None = None) -> Dic
         entity = _find_formula(store)
 
     if entity is not None and entity.review_status == "IN_REVIEW":
-        try:
-            store.review(
-                ClinicalEntityType.FORMULA, entity_id,
-                ReviewActionRequest(
-                    reviewer_id=BOOTSTRAP_REVIEWER,
-                    reviewer_role="CLINICAL_REVIEWER",
-                    decision=ReviewDecision.APPROVE,
-                    notes=(
-                        "X1D-E2E1 bootstrap: composition transcribed verbatim from "
-                        "approved evidence; canonical relationship approved by a human "
-                        "in xerbs-core"
-                    ),
-                ),
-            )
-            report["actions"].append("formula_approved")
-        except PersistentWorkflowError as exc:
-            # Most likely cause is no REVIEWED source attached, which is the
-            # eligibility gate doing its job. Surface it rather than retrying.
-            report["error"] = str(exc)
+        # X1D-AIV2-ATTEST1: the bootstrap stops here, deliberately.
+        #
+        # It used to approve the formula itself, by passing
+        # reviewer_role="CLINICAL_REVIEWER" to store.review(). That was a
+        # machine asserting clinical review authority, which this service does
+        # not have and must not appear to have -- the docstring above already
+        # said "the human decision is external"; now it is true.
+        #
+        # The formula is left IN_REVIEW, awaiting a verified xerbs-core
+        # attestation. It is therefore not ranking-eligible in a freshly
+        # bootstrapped environment, which is the honest state: nobody has
+        # approved it there yet.
+        report["actions"].append("formula_awaiting_human_attestation")
 
     # --- verify eligibility through the service's own predicate -----------
     detail = store.get_entity_detail(ClinicalEntityType.FORMULA, entity_id)

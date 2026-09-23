@@ -10,6 +10,7 @@ from app.api.safety import router as safety_router
 from app.api.reasoning import router as reasoning_router
 from app.api.interviews import router as interview_router
 from app.api.base44 import router as base44_router
+from app.api.governance import router as governance_router
 from app.core.config import get_settings
 from app.core.service_auth import require_service_auth
 from app.services.knowledge.persistent_seed import seed_legacy_formula_fixtures
@@ -70,3 +71,7 @@ app.include_router(safety_router, dependencies=SERVICE_AUTH)
 app.include_router(reasoning_router, dependencies=SERVICE_AUTH)
 app.include_router(interview_router, dependencies=SERVICE_AUTH)
 app.include_router(base44_router, dependencies=SERVICE_AUTH)
+# X1D-AIV2-ATTEST1: attested human review. Service auth proves the
+# caller is xerbs-core; the attestation lookup inside proves a person
+# decided. The two are deliberately separate.
+app.include_router(governance_router, dependencies=SERVICE_AUTH)

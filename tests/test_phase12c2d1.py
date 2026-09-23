@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import approve_entity_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 import sqlite3
 import subprocess
@@ -284,7 +285,7 @@ def test_k_clinical_ranking_eligibility_requires_a_reviewed_source():
     assert detail['clinical_ranking_eligible'] is False
     r=c.post(f'{CLINICAL}/entities/formula/{eid}/submit-review',json={'submitted_by':'phase12c2d1'})
     assert r.status_code==200, r.text
-    r=c.post(f'{CLINICAL}/entities/formula/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
+    r=approve_entity_for_test('formula', eid)
     assert r.status_code==200, r.text
     after=c.get(f'{CLINICAL}/entities/formula/{eid}').json()
     # Phase 12C-2D3: an entity_source reference alone is no longer enough; the

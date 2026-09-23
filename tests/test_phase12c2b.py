@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import approve_entity_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 from fastapi.testclient import TestClient
@@ -216,7 +217,7 @@ def test_k2_reverse_lookup_reflects_review_state_without_recomputing_eligibility
     assert before['review_status']=='DRAFT' and before['clinical_ranking_eligible'] is False
     r=c.post(f'{CLINICAL}/entities/formula/{eid}/submit-review',json={'submitted_by':'phase12c2b'})
     assert r.status_code==200, r.text
-    r=c.post(f'{CLINICAL}/entities/formula/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
+    r=approve_entity_for_test('formula', eid)
     assert r.status_code==200, r.text
     after=c.get(f'{SOURCES}/{s}/entities').json()['results'][0]
     assert after['review_status']=='REVIEWED'
@@ -264,7 +265,7 @@ def test_m2_reverse_lookup_does_not_mix_relationship_or_safety_rule_sources():
     herb=ingest([source(s)],entity_type='herb')
     for eid,typ in ((formula,'formula'),(herb,'herb')):
         r=c.post(f'{CLINICAL}/entities/{typ}/{eid}/submit-review',json={'submitted_by':'phase12c2b'})
-        c.post(f'{CLINICAL}/entities/{typ}/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
+        approve_entity_for_test(typ, eid)
     before={x['entity_id'] for x in c.get(f'{SOURCES}/{s}/entities').json()['results']}
     # A relationship and a safety rule both cite the same source_id.
     rel=c.post('/api/v1/safety/relationships',json={'source_entity_id':formula,'target_entity_id':herb,'relationship_type':'FORMULA_HERB','source_id':s,'actor_id':'reviewer','actor_role':'CLINICAL_REVIEWER'})

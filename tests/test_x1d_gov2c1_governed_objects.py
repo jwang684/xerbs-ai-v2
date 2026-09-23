@@ -304,20 +304,14 @@ def _seed_reviewed_pair(client, ext_a="xerbs:pattern:synth-a",
     ids = r.json()["created_entity_ids"]
 
     # Source through its own lifecycle so the entities can be approved.
-    client.post("/api/v1/knowledge/clinical/sources/%s/submit-review" % src,
-                json={"submitted_by": "synth-author"})
-    client.post("/api/v1/knowledge/clinical/sources/%s/review" % src,
-                json={"reviewer_id": "synth-reviewer",
-                      "reviewer_role": "CLINICAL_REVIEWER", "decision": "APPROVE"})
+    from tests.governed_fixtures import drive_source_to_reviewed
+    drive_source_to_reviewed(client, src)
+    # X1D-AIV2-ATTEST1: entity approval by request-body reviewer_role is
+    # closed. Approval now runs the real attested-review path against a stub
+    # core, so this fixture exercises verification rather than skipping it.
+    from tests.governed_fixtures import submit_and_attest_entity
     for etype, eid in zip(("pattern", "formula"), ids):
-        client.post("/api/v1/knowledge/clinical/entities/%s/%s/submit-review"
-                    % (etype, eid), json={"submitted_by": "synth-author"})
-        rr = client.post("/api/v1/knowledge/clinical/entities/%s/%s/review"
-                         % (etype, eid),
-                         json={"reviewer_id": "synth-reviewer",
-                               "reviewer_role": "CLINICAL_REVIEWER",
-                               "decision": "APPROVE"})
-        assert rr.status_code == 200, rr.text
+        submit_and_attest_entity(etype, eid)
     return ids[0], ids[1], src
 
 
@@ -506,7 +500,11 @@ class TestEntityVersioning:
         hist = client.get("/api/v1/knowledge/clinical/entities/pattern/%s/history" % pat)
         assert hist.status_code == 200
         snapshots = hist.json()["results"]
-        assert len(snapshots) >= 3          # DRAFT, IN_REVIEW, REVIEWED
+        # DRAFT and IN_REVIEW. X1D-AIV2-ATTEST1 deliberately does NOT write
+        # a version on approval: the attestation binds an exact version, so
+        # bumping it at approval time would invalidate the very attestation
+        # that authorised it.
+        assert len(snapshots) >= 2
 
         first = canonical.digest(canonical.entity_subject(
             external_id="x", entity_type="pattern", snapshot=snapshots[0]))
@@ -563,8 +561,20 @@ class TestEntityVersioning:
         with get_session_factory()() as s:
             e = s.get(ClinicalEntity, pat)
         assert e.review_status == "REVIEWED"
-        assert e.governance_provenance in lifecycle.LEGACY_PROVENANCE
-        assert e.governance_provenance != lifecycle.ATTESTED
+        # X1D-AIV2-ATTEST1: this is now a genuinely attested approval, so the
+        # provenance says so -- and it is backed by a durable event, not just
+        # a column. GOV2-C1 asserted the opposite because no attested path
+        # existed then.
+        assert e.governance_provenance == lifecycle.ATTESTED
+        assert e.review_attestation_id.startswith("att-SYNTHETIC-TEST-")
+
+        from app.services.governance.attested_review import (
+            has_verified_attested_approval)
+        from app.db.session import get_session_factory
+        with get_session_factory()() as s2:
+            assert has_verified_attested_approval(
+                s2, "CLINICAL_ENTITY", pat, e.current_version,
+                e.review_attestation_id) is True
 
 
 class TestGovernanceGuardUnchanged:

@@ -9,6 +9,7 @@ from app.schemas.clinical_workflow import ClinicalEntityType, IngestionBatchRequ
 from app.schemas.clinical_knowledge import SourceRef
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
 
+from tests.governed_fixtures import approve_entity_for_test
 c=TestClient(app)
 
 def test_adaptive_interview_selects_high_information_questions_and_persists():
@@ -48,7 +49,7 @@ def _reviewed(store, typ, name, source_id, **payload):
     req=IngestionBatchRequest(submitted_by='phase9',source_label='phase9',items=[IngestionItem(entity_type=typ,payload={'name':name,**payload},sources=[SourceRef(source_id=source_id,title='phase9 source',source_type='TEST')])])
     eid=store.ingest(req).created_entity_ids[0]
     store.submit_for_review(typ,eid,'phase9')
-    store.review(typ,eid,ReviewActionRequest(reviewer_id='reviewer',reviewer_role='CLINICAL_REVIEWER',decision=ReviewDecision.APPROVE))
+    approve_entity_for_test(getattr(typ,'value',typ), eid, session_factory=store.Session)
     return eid
 
 

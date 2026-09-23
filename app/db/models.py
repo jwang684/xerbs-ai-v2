@@ -25,6 +25,13 @@ class ClinicalEntity(Base):
     # X1D-AIV2-GOV2-C1: how this object came to hold its review_status. A
     # legacy REVIEWED row is not evidence that a human reviewed anything.
     governance_provenance: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    # X1D-AIV2-ATTEST1: the attestation seam for entities. 0008 gave it to
+    # relationships and safety rules only, because entity approval was still
+    # local then. Closing that path proved the column is needed here too --
+    # without it the approval wrote to a phantom Python attribute and the
+    # reference was silently lost.
+    review_attestation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     migration_origin: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -288,8 +295,12 @@ class GovernedObjectReviewEvent(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     __table_args__ = (
-        UniqueConstraint("object_type", "object_id", "version",
-                         name="uq_governed_object_review_event_version"),
+        # X1D-AIV2-ATTEST1: per ACTION, not per version. Several transitions
+        # can legitimately share a version -- CREATED and SUBMITTED_FOR_REVIEW
+        # do -- and the version is bound by the attestation, so bumping it on
+        # approval would invalidate the attestation that authorised it.
+        UniqueConstraint("object_type", "object_id", "version", "action",
+                         name="uq_governed_object_review_event_action"),
     )
 
 

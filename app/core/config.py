@@ -38,6 +38,21 @@ class Settings(BaseSettings):
     # established by the controlled bootstrap instead.
     allow_external_governance_mutation: bool = False
 
+    # X1D-AIV2-ATTEST1: the reverse call to xerbs-core, for verifying a human
+    # clinical review attestation.
+    #
+    # A payload core pushes is just a string once it has left core, and whoever
+    # holds the service credential can send any string. So ai-v2 asks core
+    # whether the attestation actually exists and is still authoritative.
+    # Minting one requires an authenticated admin session holding
+    # clinical:review -- a path no service credential has.
+    #
+    # Both unset by default, so approval fails closed on a deployment that has
+    # not been wired up. No secret value exists in this repository.
+    core_base_url: str | None = None
+    core_internal_service_token: str | None = None
+    core_lookup_timeout_seconds: float = 10.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

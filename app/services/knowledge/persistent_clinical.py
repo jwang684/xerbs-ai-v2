@@ -126,16 +126,24 @@ class PersistentClinicalStore:
             if e.review_status != "IN_REVIEW": raise PersistentWorkflowError("Only IN_REVIEW records can receive a review decision")
             before=e.review_status
             if request.decision == ReviewDecision.APPROVE:
-                if self._source_count(s,e.id)==0: raise PersistentWorkflowError("Approval requires at least one explicit source")
-                e.review_status="REVIEWED"; action="APPROVED"
-                # X1D-AIV2-GOV2-C1: record HOW this approval happened. No
-                # verified human attestation exists for any entity yet, so the
-                # honest classification is one of the two pre-attestation
-                # values -- distinguished by whether the approver is the same
-                # identity that submitted it. ("LEGACY_" here means
-                # pre-attestation, not old.)
-                e.governance_provenance=self._classify_local_approval(
-                    s, e.id, request.reviewer_id)
+                # X1D-AIV2-ATTEST1: this path is closed.
+                #
+                # It moved a clinical entity to REVIEWED because the request
+                # body said reviewer_role="CLINICAL_REVIEWER". That string is
+                # self-asserted: it establishes nothing, and this service has
+                # no end-user identity with which to establish anything. Human
+                # clinical approval now requires a verified xerbs-core
+                # attestation, delivered through
+                # POST /api/v1/governance/CLINICAL_ENTITY/{id}/attested-review.
+                #
+                # REJECT and CHANGES_REQUESTED stay open. Neither confers
+                # authority, and making it harder to WITHHOLD approval would be
+                # exactly backwards.
+                raise PersistentWorkflowError(
+                    "Human clinical approval requires a verified xerbs-core "
+                    "attestation; a reviewer_role in the request body is a "
+                    "self-assertion and cannot approve a clinical entity. Use "
+                    "the attested-review endpoint.")
             elif request.decision == ReviewDecision.REJECT:
                 e.review_status="REJECTED"; action="REJECTED"
             else:
@@ -527,12 +535,17 @@ class PersistentClinicalStore:
                        .where(GovernedObjectSource.object_type=="CLINICAL_RELATIONSHIP",
                               GovernedObjectSource.object_id==rel.id,
                               SourceRegistry.review_status=="REVIEWED")) or 0
+        from app.services.governance.attested_review import (
+            has_verified_attested_approval)
         return lifecycle.is_governed_object_ranking_eligible(
             review_status=rel.review_status,
             governance_provenance=rel.governance_provenance,
             review_attestation_id=rel.review_attestation_id,
             reviewed_evidence_source_count=count,
-            retired_at=rel.retired_at)
+            retired_at=rel.retired_at,
+            has_verified_attested_approval=has_verified_attested_approval(
+                s, "CLINICAL_RELATIONSHIP", rel.id, rel.version,
+                rel.review_attestation_id))
 
     def _is_ranking_eligible(self,s,eid,review_status):
         """THE canonical clinical ranking eligibility rule.

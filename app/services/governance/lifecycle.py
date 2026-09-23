@@ -153,13 +153,22 @@ def is_governed_object_ranking_eligible(
     review_attestation_id: str | None,
     reviewed_evidence_source_count: int,
     retired_at: Any = None,
+    has_verified_attested_approval: bool = False,
 ) -> bool:
     """THE eligibility rule for relationships and safety rules.
 
     One function, so ranking, safety screening and any future caller cannot
     each invent their own version. The lifecycle string is necessary and never
-    sufficient: a GOV2-era object also needs a recorded attestation id, which
-    only a verified core decision can produce.
+    sufficient.
+
+    X1D-AIV2-ATTEST1 hardening: ``review_attestation_id`` being non-empty is
+    also not sufficient. A column is just a column -- a direct UPDATE, a stray
+    migration, or a future careless code path could fill it with any string.
+    Eligibility therefore requires ``has_verified_attested_approval``, which
+    the caller derives from a ``governed_object_review_event`` row recording
+    APPROVED_BY_ATTESTATION at **this** version under **this** attestation.
+    Only the verified-attestation transition writes that row, and it does not
+    carry forward to a later version.
     """
     if retired_at is not None:
         return False
@@ -170,8 +179,10 @@ def is_governed_object_ranking_eligible(
         # Pre-GOV2 rows. Grandfathered for now, explicitly and reversibly.
         return LEGACY_ELIGIBILITY_GRANDFATHERED
 
-    # GOV2-era: durable proof of a human decision, or nothing.
+    # GOV2-era: durable proof of a verified human decision, or nothing.
     if not review_attestation_id:
+        return False
+    if not has_verified_attested_approval:
         return False
     return reviewed_evidence_source_count > 0
 

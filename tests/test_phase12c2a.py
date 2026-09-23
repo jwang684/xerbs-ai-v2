@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import approve_entity_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 from fastapi.testclient import TestClient
@@ -247,7 +248,7 @@ def test_k2_snapshot_cannot_diverge_from_registry_across_governance_transitions(
     eid=registered(s)
     r=c.post(f'{CLINICAL}/entities/formula/{eid}/submit-review',json={'submitted_by':'phase12c2a'})
     assert r.status_code==200, r.text
-    r=c.post(f'{CLINICAL}/entities/formula/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
+    r=approve_entity_for_test('formula', eid)
     assert r.status_code==200, r.text
     detail=c.get(f'{CLINICAL}/entities/formula/{eid}').json()
     history=c.get(f'{CLINICAL}/entities/formula/{eid}/history').json()['results']

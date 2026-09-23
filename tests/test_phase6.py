@@ -8,6 +8,7 @@ from app.schemas.clinical_knowledge import SourceRef
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore, PersistentWorkflowError
 
 
+from tests.governed_fixtures import approve_entity_for_test
 def store():
     engine=create_engine("sqlite://",connect_args={"check_same_thread":False},poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -30,7 +31,7 @@ def approve_source(s, source_id):
 
 def test_persistent_round_trip_across_store_instances():
     engine=create_engine("sqlite://",connect_args={"check_same_thread":False},poolclass=StaticPool); Base.metadata.create_all(engine); Session=sessionmaker(bind=engine,expire_on_commit=False)
-    a=PersistentClinicalStore(Session); eid=create_formula(a); a.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit",expected_version=1); a.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="reviewer",reviewer_role="CLINICAL_REVIEWER",decision=ReviewDecision.APPROVE,expected_version=2))
+    a=PersistentClinicalStore(Session); eid=create_formula(a); a.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit",expected_version=1); approve_entity_for_test("formula",eid,session_factory=Session)
     b=PersistentClinicalStore(Session)
     assert b.eligible_formula_candidates(["持久症状"],"") == []      # Source still DRAFT
     approve_source(b,"src-p6")
@@ -43,14 +44,28 @@ def test_optimistic_concurrency_rejects_stale_write():
         s.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit",expected_version=99); assert False
     except PersistentWorkflowError as e: assert "VERSION_CONFLICT" in str(e)
 
-def test_reviewer_role_enforced():
+def test_local_approval_is_refused_whatever_role_is_claimed():
+    """X1D-AIV2-ATTEST1: the role gate on APPROVE is gone, because the path is.
+
+    This used to assert that an "IMPORTER" role was rejected while
+    "CLINICAL_REVIEWER" was accepted -- which meant a string in a request body
+    decided clinical authority. Now no claimed role approves anything.
+    """
     s=store(); eid=create_formula(s); s.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit")
+    # An unknown role is still rejected by the pre-existing field validation,
+    # which runs first. The new property is the one below it: even a perfectly
+    # well-formed claimed role approves nothing.
     try:
         s.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="x",reviewer_role="IMPORTER",decision=ReviewDecision.APPROVE)); assert False
     except PersistentWorkflowError as e: assert "role" in str(e).lower()
+    for claimed in ("CLINICAL_REVIEWER","CLINICAL_ADMIN"):
+        try:
+            s.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="x",reviewer_role=claimed,decision=ReviewDecision.APPROVE)); assert False
+        except PersistentWorkflowError as e:
+            assert "attestation" in str(e).lower(), claimed
 
 def test_retired_formula_no_longer_ranks():
-    s=store(); eid=create_formula(s); s.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit"); s.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="r",decision=ReviewDecision.APPROVE))
+    s=store(); eid=create_formula(s); s.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit"); approve_entity_for_test("formula",eid,session_factory=s.Session)
     approve_source(s,"src-p6"); assert s.eligible_formula_candidates(["持久症状"],"")
     s.retire(ClinicalEntityType.FORMULA,eid,"r","CLINICAL_REVIEWER")
     assert s.eligible_formula_candidates(["持久症状"],"") == []
@@ -62,7 +77,8 @@ def test_supersede_requires_admin_and_links_replacement():
     assert result["review_status"] == "RETIRED" and result["superseded_by_id"] == new
 
 def test_approval_without_source_still_blocked_persistently():
+    """The source requirement survived the move to the attested path."""
     s=store(); eid=create_formula(s,with_source=False); s.submit_for_review(ClinicalEntityType.FORMULA,eid,"submit")
-    try:
-        s.review(ClinicalEntityType.FORMULA,eid,ReviewActionRequest(reviewer_id="r",decision=ReviewDecision.APPROVE)); assert False
-    except PersistentWorkflowError as e: assert "source" in str(e).lower()
+    r=approve_entity_for_test("formula",eid,session_factory=s.Session)
+    assert r.status_code==409
+    assert "source" in r.json()["message"].lower()

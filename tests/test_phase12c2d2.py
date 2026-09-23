@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import approve_entity_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 import sqlite3
 import subprocess
@@ -385,7 +386,7 @@ def test_x_clinical_ranking_eligible_requires_a_reviewed_source():
     eid=r.json()['created_entity_ids'][0]
     assert c.get(f'{SOURCES}/{s}').json()['review_status']=='DRAFT'
     v=c.post(f'{CLINICAL}/entities/formula/{eid}/submit-review',json={'submitted_by':'phase12c2d2'}).json()['version']
-    ok=c.post(f'{CLINICAL}/entities/formula/{eid}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':v})
+    ok=approve_entity_for_test('formula', eid)
     assert ok.status_code==200, ok.text
     detail=c.get(f'{CLINICAL}/entities/formula/{eid}').json()
     assert detail['review_status']=='REVIEWED'
