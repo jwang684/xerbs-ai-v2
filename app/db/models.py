@@ -12,10 +12,19 @@ def utcnow():
 class ClinicalEntity(Base):
     __tablename__ = "clinical_entity"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # X1D-AIV2-GOV2-C1: stable semantic identity, for cross-service attestation
+    # and for a future governed export/import. Supplied by authoring tooling,
+    # never derived from `name` -- a display name is mutable, and deriving
+    # identity from it would fork the identity on rename. NULL for rows
+    # authored before GOV2; the migration does not invent one.
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     entity_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     review_status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT", index=True)
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # X1D-AIV2-GOV2-C1: how this object came to hold its review_status. A
+    # legacy REVIEWED row is not evidence that a human reviewed anything.
+    governance_provenance: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     migration_origin: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -159,6 +168,24 @@ class ClinicalRelationship(Base):
     source_id: Mapped[str | None] = mapped_column(String(128), ForeignKey("source_registry.source_id", ondelete="RESTRICT"), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # ---- X1D-AIV2-GOV2-C1 ------------------------------------------------
+    # Semantic identity, derived from the endpoints: rel:<src>|<TYPE>|<tgt>.
+    # Stable across evidence and version changes; changes only when the triple
+    # does -- and a changed triple is a different relationship, not an edit.
+    external_id: Mapped[str | None] = mapped_column(String(600), nullable=True, unique=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    governance_provenance: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    # The attestation seam. Only a verified xerbs-core human decision may ever
+    # fill this; nothing in this service can. Its absence is what keeps a
+    # GOV2-era object out of ranking.
+    review_attestation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitter_subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_material_editor_subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     __table_args__ = (UniqueConstraint("source_entity_id", "target_entity_id", "relationship_type", name="uq_clinical_relationship"),)
 
 
@@ -175,6 +202,95 @@ class SafetyRule(Base):
     source_id: Mapped[str | None] = mapped_column(String(128), ForeignKey("source_registry.source_id", ondelete="RESTRICT"), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # ---- X1D-AIV2-GOV2-C1: same treatment, same reasons --------------------
+    # A safety rule drives BLOCK, so the "REVIEWED at creation" defect mattered
+    # here at least as much as it did for relationships.
+    external_id: Mapped[str | None] = mapped_column(String(600), nullable=True, unique=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    governance_provenance: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    review_attestation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitter_subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_material_editor_subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ----------------------------------------------------------------------
+# X1D-AIV2-GOV2-C1: durable provenance for the two object types that never
+# had any.
+# ----------------------------------------------------------------------
+# Clinical entities already have clinical_entity_version, entity_source and
+# review_event, and those are reused unchanged -- duplicating them would be
+# scope creep. Relationships and safety rules had none of the three. Rather
+# than build two near-identical sets, they share one, discriminated by
+# object_type. The shape mirrors the entity tables so the vocabulary is the
+# same one a reviewer already knows.
+
+
+class GovernedObjectVersion(Base):
+    """Append-only snapshot of one governed object at one version."""
+
+    __tablename__ = "governed_object_version"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    object_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("object_type", "object_id", "version",
+                         name="uq_governed_object_version"),
+    )
+
+
+class GovernedObjectSource(Base):
+    """One evidence reference attached to one governed object.
+
+    Mirrors entity_source, including `locator` -- "which section of the
+    document" is part of what a reviewer read, and Production's relationship
+    could not express it at all.
+    """
+
+    __tablename__ = "governed_object_source"
+    object_type: Mapped[str] = mapped_column(String(40), primary_key=True)
+    object_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(128), ForeignKey("source_registry.source_id", ondelete="RESTRICT"), primary_key=True)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    locator: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class GovernedObjectReviewEvent(Base):
+    """One lifecycle transition of a governed object.
+
+    `attestation_id` is the reference to the xerbs-core human decision. It
+    stays NULL for every event this service can write on its own, which is
+    every event it can write today.
+    """
+
+    __tablename__ = "governed_object_review_event"
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    object_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_subject: Mapped[str] = mapped_column(String(128), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    attestation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("object_type", "object_id", "version",
+                         name="uq_governed_object_review_event_version"),
+    )
 
 
 class DiagnosticInterview(Base):

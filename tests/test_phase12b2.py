@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import simulate_core_attestation_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 from fastapi.testclient import TestClient
@@ -34,6 +35,9 @@ def pattern_formula_pair():
     pattern,_=reviewed('pattern',{'name':'Phase12B2 Pattern '+uuid4().hex[:6]})
     formula,src=reviewed('formula',{'name':'Phase12B2 Formula '+uuid4().hex[:6],'ingredients':['Phase12B2 Herb']})
     rel=link(pattern,formula,'PATTERN_FORMULA',src)
+    # X1D-AIV2-GOV2-C1: creation now yields DRAFT. This test is about the
+    # read endpoint's shape, so stand in for the future core attestation.
+    simulate_core_attestation_for_test('CLINICAL_RELATIONSHIP',rel)
     return pattern,formula,rel
 
 
@@ -143,13 +147,21 @@ def test_read_endpoint_does_not_mutate_relationship_records():
     assert after['count']==1
 
 
-def test_existing_post_relationship_behavior_is_unchanged():
+def test_post_relationship_now_starts_draft_gov2c1():
+    """X1D-AIV2-GOV2-C1 breaking change, asserted rather than removed.
+
+    This test used to require REVIEWED on creation. That was the defect:
+    a relationship's authority came from a literal in safety/engine.py,
+    not from any review. The response also gained governance fields.
+    """
     formula,src=reviewed('formula',{'name':'Phase12B2 POST Formula '+uuid4().hex[:6],'ingredients':['Phase12B2 Herb']})
     herb,_=reviewed('herb',{'name':'Phase12B2 POST Herb '+uuid4().hex[:6]})
     ok=c.post(REL,json={'source_entity_id':formula,'target_entity_id':herb,'relationship_type':'FORMULA_HERB','source_id':src,'actor_id':'reviewer','actor_role':'CLINICAL_REVIEWER'})
     assert ok.status_code==200, ok.text
-    assert set(ok.json())=={'id','source_entity_id','target_entity_id','relationship_type','review_status'}
-    assert ok.json()['review_status']=='REVIEWED'
+    assert {'id','source_entity_id','target_entity_id','relationship_type',
+            'review_status'} <= set(ok.json())
+    assert ok.json()['review_status']=='DRAFT'
+    assert ok.json()['clinical_ranking_eligible'] is False
     # Governance still enforced exactly as before.
     unauthorized=c.post(REL,json={'source_entity_id':formula,'target_entity_id':herb,'relationship_type':'FORMULA_HERB','actor_id':'x','actor_role':'PATIENT'})
     assert unauthorized.status_code==422 and 'not authorized' in unauthorized.json()['detail']

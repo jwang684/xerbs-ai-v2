@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import simulate_core_attestation_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from fastapi.testclient import TestClient
 from app.main import app
@@ -37,6 +38,10 @@ def test_safety_relationship_and_blocking_rule():
     assert rr.status_code==200, rr.text
     rule=c.post('/api/v1/safety/rules',json={'target_entity_id':herb,'rule_type':'DRUG_INTERACTION','trigger_term':'warfarin','severity':'CRITICAL','action':'BLOCK','message':'Potential reviewed herb-drug interaction','source_id':'src-p7-h','actor_id':'reviewer','actor_role':'CLINICAL_REVIEWER'})
     assert rule.status_code==200, rule.text
+    # X1D-AIV2-GOV2-C1: both are created DRAFT now. This test is about
+    # blocking behaviour, so stand in for the future core attestation.
+    simulate_core_attestation_for_test('CLINICAL_RELATIONSHIP',rr.json()['id'])
+    simulate_core_attestation_for_test('SAFETY_RULE',rule.json()['id'])
     s=c.post('/api/v1/safety/screen',json={'formula_id':formula,'formula_name':'Phase7 Formula','ingredients':['Phase7 Herb'],'patient_context':{'medications':['warfarin']}})
     assert s.status_code==200
     assert s.json()['eligible_for_selection'] is False

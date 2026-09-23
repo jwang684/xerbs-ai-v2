@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from sqlalchemy import or_, select, func
 from sqlalchemy.exc import IntegrityError
-from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship, SourceReviewEvent
+from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship, SourceReviewEvent, GovernedObjectSource
 from app.db.session import get_session_factory
 from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict, SourceRecord, SourceEntityRef, SourceAlreadyExistsDetail, SourceReviewDecision, SourceReviewEventRecord, SourceAuditEventRecord
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
@@ -77,7 +77,21 @@ class PersistentClinicalStore:
                 if not name: raise PersistentWorkflowError("payload.name is required")
                 prefix={ClinicalEntityType.PATTERN:"pat",ClinicalEntityType.FORMULA:"frm",ClinicalEntityType.HERB:"herb"}[item.entity_type]
                 eid=f"{prefix}-{uuid4().hex[:16]}"; ids.append(eid)
-                entity=ClinicalEntity(id=eid, entity_type=item.entity_type.value, name=name, review_status="DRAFT", current_version=1, migration_origin=clean.get("migration_origin"))
+                # X1D-AIV2-GOV2-C1: external_id is carried from the ingestion
+                # item when the authoring side supplied one. It is never
+                # derived from `name` -- see app/services/governance/identity.
+                ext=item.external_id
+                if ext is not None:
+                    from app.services.governance.identity import (
+                        SemanticIdentityError, validate_external_id)
+                    try:
+                        ext=validate_external_id(ext)
+                    except SemanticIdentityError as exc:
+                        # A malformed semantic identity is a rejected submission,
+                        # not a server fault: it fails closed with the ordinary
+                        # governance error so the caller learns what was wrong.
+                        raise PersistentWorkflowError(str(exc)) from exc
+                entity=ClinicalEntity(id=eid, entity_type=item.entity_type.value, name=name, review_status="DRAFT", current_version=1, external_id=ext, governance_provenance="UNREVIEWED", migration_origin=clean.get("migration_origin"))
                 s.add(entity)
                 self._assert_unique_source_ids(item.sources)
                 for src in item.sources:
@@ -114,6 +128,14 @@ class PersistentClinicalStore:
             if request.decision == ReviewDecision.APPROVE:
                 if self._source_count(s,e.id)==0: raise PersistentWorkflowError("Approval requires at least one explicit source")
                 e.review_status="REVIEWED"; action="APPROVED"
+                # X1D-AIV2-GOV2-C1: record HOW this approval happened. No
+                # verified human attestation exists for any entity yet, so the
+                # honest classification is one of the two pre-attestation
+                # values -- distinguished by whether the approver is the same
+                # identity that submitted it. ("LEGACY_" here means
+                # pre-attestation, not old.)
+                e.governance_provenance=self._classify_local_approval(
+                    s, e.id, request.reviewer_id)
             elif request.decision == ReviewDecision.REJECT:
                 e.review_status="REJECTED"; action="REJECTED"
             else:
@@ -333,11 +355,17 @@ class PersistentClinicalStore:
         if not pattern_ids: return []
         scored={}
         with self.Session() as s:
-            rels=s.scalars(select(ClinicalRelationship).where(
+            # X1D-AIV2-GOV2-C1: the relationship's own eligibility is now a
+            # governance question, not a status-string comparison. A
+            # relationship authored under GOV2 needs a recorded core
+            # attestation; it cannot get one inside this service, so a newly
+            # created relationship can never reach this list.
+            candidates=s.scalars(select(ClinicalRelationship).where(
                 ClinicalRelationship.source_entity_id.in_(pattern_ids),
                 ClinicalRelationship.relationship_type=="PATTERN_FORMULA",
-                ClinicalRelationship.review_status=="REVIEWED"
             )).all()
+            rels=[r for r in candidates
+                  if self._is_relationship_ranking_eligible(s, r)]
             for rel in rels:
                 formula=s.get(ClinicalEntity,rel.target_entity_id)
                 if formula is None or formula.entity_type!="formula":
@@ -468,6 +496,44 @@ class PersistentClinicalStore:
         return s.scalar(select(func.count()).select_from(EntitySource)
                         .join(SourceRegistry,SourceRegistry.source_id==EntitySource.source_id)
                         .where(EntitySource.entity_id==eid,SourceRegistry.review_status=="REVIEWED")) or 0
+    @staticmethod
+    def _classify_local_approval(s, entity_id, reviewer_id) -> str:
+        """Was the approver the same identity that submitted it?
+
+        Answered from the recorded event stream, not from a parameter, so it
+        reports what actually happened. Neither outcome is a verified human
+        attestation; the distinction is how weak the approval is.
+        """
+        from app.services.governance import lifecycle
+        submitter=s.scalar(
+            select(ReviewEvent.actor_id)
+            .where(ReviewEvent.entity_id==entity_id,
+                   ReviewEvent.action=="SUBMITTED_FOR_REVIEW")
+            .order_by(ReviewEvent.version.desc()).limit(1))
+        if submitter is not None and submitter == reviewer_id:
+            return lifecycle.LEGACY_SELF_REVIEWED
+        return lifecycle.LEGACY_INDEPENDENTLY_REVIEWED
+
+    def _is_relationship_ranking_eligible(self, s, rel) -> bool:
+        """Relationship eligibility, delegated to the one governance rule.
+
+        Kept here as a thin delegate rather than reimplemented, so ranking and
+        SafetyEngine cannot drift into two different answers.
+        """
+        from app.services.governance import lifecycle
+        count=s.scalar(select(func.count()).select_from(GovernedObjectSource)
+                       .join(SourceRegistry,
+                             SourceRegistry.source_id==GovernedObjectSource.source_id)
+                       .where(GovernedObjectSource.object_type=="CLINICAL_RELATIONSHIP",
+                              GovernedObjectSource.object_id==rel.id,
+                              SourceRegistry.review_status=="REVIEWED")) or 0
+        return lifecycle.is_governed_object_ranking_eligible(
+            review_status=rel.review_status,
+            governance_provenance=rel.governance_provenance,
+            review_attestation_id=rel.review_attestation_id,
+            reviewed_evidence_source_count=count,
+            retired_at=rel.retired_at)
+
     def _is_ranking_eligible(self,s,eid,review_status):
         """THE canonical clinical ranking eligibility rule.
 

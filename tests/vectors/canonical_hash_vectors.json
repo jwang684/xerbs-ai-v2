@@ -1,0 +1,253 @@
+{
+  "spec_version": "xerbs-canonical-hash/1",
+  "purpose": "Cross-repository canonical-hash vectors. xerbs-core consumes these verbatim when CORE-ATTEST integration lands: a digest recomputed by the same implementation inside an assertion proves nothing, so the expected values here are constants.",
+  "rules": [
+    "UTF-8; non-ASCII never escaped",
+    "every string NFC-normalised before serialisation",
+    "object keys sorted by Unicode code point",
+    "separators (',', ':') -- no insignificant whitespace",
+    "set-valued arrays sorted by canonical serialisation; ordered arrays keep order",
+    "None omitted entirely, never serialised as null",
+    "integers only; floats rejected",
+    "excluded: primary keys, timestamps, environment-local ids, review_status, reviewer identity, version counter"
+  ],
+  "vectors": [
+    {
+      "name": "source_ascii",
+      "description": "ASCII source with all fields present",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "SOURCE",
+        "source_id": "src-ascii-1",
+        "title": "A Reference Work",
+        "citation": "chapter 2",
+        "url": "https://example.invalid/a",
+        "source_type": "GUIDELINE"
+      },
+      "canonical_json": "{\"citation\":\"chapter 2\",\"kind\":\"SOURCE\",\"source_id\":\"src-ascii-1\",\"source_type\":\"GUIDELINE\",\"spec\":\"xerbs-canonical-hash/1\",\"title\":\"A Reference Work\",\"url\":\"https://example.invalid/a\"}",
+      "sha256": "a3b067e71d101be3a4dcb6fb04ce7d23285c4d3e628ee48bde14a2e8be63d150"
+    },
+    {
+      "name": "source_cjk_null_fields",
+      "description": "CJK source; null citation and url are OMITTED, not serialised as null",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "SOURCE",
+        "source_id": "src-cjk-1",
+        "title": "温病条辨",
+        "citation": null,
+        "url": null,
+        "source_type": "CLASSICAL_TEXT"
+      },
+      "canonical_json": "{\"kind\":\"SOURCE\",\"source_id\":\"src-cjk-1\",\"source_type\":\"CLASSICAL_TEXT\",\"spec\":\"xerbs-canonical-hash/1\",\"title\":\"温病条辨\"}",
+      "sha256": "526dbdc41ea2060b4d9ef3b0bc540d6ef6e381845a983b21a3040cf881bdd7c7"
+    },
+    {
+      "name": "entity_cjk_set_sorted",
+      "description": "CJK pattern; set-valued indications sorted, excluded fields dropped",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "CLINICAL_ENTITY",
+        "external_id": "xerbs:pattern:wind-heat",
+        "entity_type": "pattern",
+        "content": {
+          "name": "风热犯卫",
+          "indications": [
+            "发热",
+            "咽红肿",
+            "头痛"
+          ],
+          "aliases": []
+        }
+      },
+      "canonical_json": "{\"content\":{\"aliases\":[],\"indications\":[\"发热\",\"咽红肿\",\"头痛\"],\"name\":\"风热犯卫\"},\"entity_type\":\"pattern\",\"external_id\":\"xerbs:pattern:wind-heat\",\"kind\":\"CLINICAL_ENTITY\",\"spec\":\"xerbs-canonical-hash/1\"}",
+      "sha256": "e97851d45afbad67f337a59b0885f1a12c75c88a70b8aaf6de50607469d7d762"
+    },
+    {
+      "name": "entity_nfd_input",
+      "description": "name written in NFD; MUST equal entity_nfc_input",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "CLINICAL_ENTITY",
+        "external_id": "xerbs:formula:yinqiaosan",
+        "entity_type": "formula",
+        "content": {
+          "name": "银翘散",
+          "indications": [
+            "发热",
+            "咽痛"
+          ]
+        }
+      },
+      "canonical_json": "{\"content\":{\"indications\":[\"发热\",\"咽痛\"],\"name\":\"银翘散\"},\"entity_type\":\"formula\",\"external_id\":\"xerbs:formula:yinqiaosan\",\"kind\":\"CLINICAL_ENTITY\",\"spec\":\"xerbs-canonical-hash/1\"}",
+      "sha256": "5f9ef1db9ae56f52027ac97d6e3a6298c68926ae6e9fa2fe30392c322ee94563"
+    },
+    {
+      "name": "entity_nfc_input",
+      "description": "same entity in NFC, indications in a different order",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "CLINICAL_ENTITY",
+        "external_id": "xerbs:formula:yinqiaosan",
+        "entity_type": "formula",
+        "content": {
+          "name": "银翘散",
+          "indications": [
+            "发热",
+            "咽痛"
+          ]
+        }
+      },
+      "canonical_json": "{\"content\":{\"indications\":[\"发热\",\"咽痛\"],\"name\":\"银翘散\"},\"entity_type\":\"formula\",\"external_id\":\"xerbs:formula:yinqiaosan\",\"kind\":\"CLINICAL_ENTITY\",\"spec\":\"xerbs-canonical-hash/1\"}",
+      "sha256": "5f9ef1db9ae56f52027ac97d6e3a6298c68926ae6e9fa2fe30392c322ee94563"
+    },
+    {
+      "name": "relationship_pattern_formula",
+      "description": "PATTERN_FORMULA triple",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "CLINICAL_RELATIONSHIP",
+        "source_external_id": "xerbs:pattern:wind-heat",
+        "relationship_type": "PATTERN_FORMULA",
+        "target_external_id": "xerbs:formula:yinqiaosan"
+      },
+      "canonical_json": "{\"kind\":\"CLINICAL_RELATIONSHIP\",\"relationship_type\":\"PATTERN_FORMULA\",\"source_external_id\":\"xerbs:pattern:wind-heat\",\"spec\":\"xerbs-canonical-hash/1\",\"target_external_id\":\"xerbs:formula:yinqiaosan\"}",
+      "sha256": "d31caf4b5e2626b13d67330eed8cc6087e121501b0b895b1c8c9028d436f7888"
+    },
+    {
+      "name": "relationship_different_target",
+      "description": "different target; MUST differ from relationship_pattern_formula",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "CLINICAL_RELATIONSHIP",
+        "source_external_id": "xerbs:pattern:wind-heat",
+        "relationship_type": "PATTERN_FORMULA",
+        "target_external_id": "xerbs:formula:qingfei"
+      },
+      "canonical_json": "{\"kind\":\"CLINICAL_RELATIONSHIP\",\"relationship_type\":\"PATTERN_FORMULA\",\"source_external_id\":\"xerbs:pattern:wind-heat\",\"spec\":\"xerbs-canonical-hash/1\",\"target_external_id\":\"xerbs:formula:qingfei\"}",
+      "sha256": "fd56b9b675af0fc1d50ec1391f3de0b42956c0b3d0629be6cd32dbc355ac0fd3"
+    },
+    {
+      "name": "safety_rule_block_cjk",
+      "description": "BLOCK rule with CJK trigger and message",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "SAFETY_RULE",
+        "target_external_id": "xerbs:formula:yinqiaosan",
+        "rule_type": "PREGNANCY",
+        "trigger_term": "孕",
+        "severity": "CRITICAL",
+        "action": "BLOCK",
+        "message": "孕期禁用"
+      },
+      "canonical_json": "{\"action\":\"BLOCK\",\"kind\":\"SAFETY_RULE\",\"message\":\"孕期禁用\",\"rule_type\":\"PREGNANCY\",\"severity\":\"CRITICAL\",\"spec\":\"xerbs-canonical-hash/1\",\"target_external_id\":\"xerbs:formula:yinqiaosan\",\"trigger_term\":\"孕\"}",
+      "sha256": "165c35dd2a1a076e1d06d449de3ff6f28d391c427ee047b6a042dfd2937f1e29"
+    },
+    {
+      "name": "safety_rule_warn_variant",
+      "description": "same rule downgraded to WARN; MUST differ",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "SAFETY_RULE",
+        "target_external_id": "xerbs:formula:yinqiaosan",
+        "rule_type": "PREGNANCY",
+        "trigger_term": "孕",
+        "severity": "WARN",
+        "action": "WARN",
+        "message": "孕期禁用"
+      },
+      "canonical_json": "{\"action\":\"WARN\",\"kind\":\"SAFETY_RULE\",\"message\":\"孕期禁用\",\"rule_type\":\"PREGNANCY\",\"severity\":\"WARN\",\"spec\":\"xerbs-canonical-hash/1\",\"target_external_id\":\"xerbs:formula:yinqiaosan\",\"trigger_term\":\"孕\"}",
+      "sha256": "1eb23e7f1f0dbf52fb075e663d8188e2746983611db2a3ecd2a7f6abfad0807a"
+    },
+    {
+      "name": "evidence_three_sources",
+      "description": "three sources given out of order",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "EVIDENCE_SET",
+        "evidence": [
+          {
+            "source_id": "src-c",
+            "source_version": 2,
+            "locator": "p.9"
+          },
+          {
+            "source_id": "src-a",
+            "source_version": 1
+          },
+          {
+            "source_id": "src-b",
+            "source_version": 1
+          }
+        ]
+      },
+      "canonical_json": "{\"evidence\":[{\"locator\":\"p.9\",\"source_id\":\"src-c\",\"source_version\":2},{\"source_id\":\"src-a\",\"source_version\":1},{\"source_id\":\"src-b\",\"source_version\":1}],\"kind\":\"EVIDENCE_SET\",\"spec\":\"xerbs-canonical-hash/1\"}",
+      "sha256": "422b98179150f229ad8468885080ce46be8ae3ebba96a9760d0306d05250d655"
+    },
+    {
+      "name": "evidence_three_permuted",
+      "description": "same set, different row order; MUST equal evidence_three_sources",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "EVIDENCE_SET",
+        "evidence": [
+          {
+            "source_id": "src-c",
+            "source_version": 2,
+            "locator": "p.9"
+          },
+          {
+            "source_id": "src-a",
+            "source_version": 1
+          },
+          {
+            "source_id": "src-b",
+            "source_version": 1
+          }
+        ]
+      },
+      "canonical_json": "{\"evidence\":[{\"locator\":\"p.9\",\"source_id\":\"src-c\",\"source_version\":2},{\"source_id\":\"src-a\",\"source_version\":1},{\"source_id\":\"src-b\",\"source_version\":1}],\"kind\":\"EVIDENCE_SET\",\"spec\":\"xerbs-canonical-hash/1\"}",
+      "sha256": "422b98179150f229ad8468885080ce46be8ae3ebba96a9760d0306d05250d655"
+    },
+    {
+      "name": "evidence_added_source",
+      "description": "one source added; MUST differ from evidence_three_sources",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "EVIDENCE_SET",
+        "evidence": [
+          {
+            "source_id": "src-c",
+            "source_version": 2,
+            "locator": "p.9"
+          },
+          {
+            "source_id": "src-a",
+            "source_version": 1
+          },
+          {
+            "source_id": "src-b",
+            "source_version": 1
+          },
+          {
+            "source_id": "src-d",
+            "source_version": 1
+          }
+        ]
+      },
+      "canonical_json": "{\"evidence\":[{\"locator\":\"p.9\",\"source_id\":\"src-c\",\"source_version\":2},{\"source_id\":\"src-a\",\"source_version\":1},{\"source_id\":\"src-b\",\"source_version\":1},{\"source_id\":\"src-d\",\"source_version\":1}],\"kind\":\"EVIDENCE_SET\",\"spec\":\"xerbs-canonical-hash/1\"}",
+      "sha256": "987e5fb043d2f8f79a4822c2233c065a8c2e8c4f03bd8228f91d0addd77654b0"
+    },
+    {
+      "name": "evidence_empty",
+      "description": "empty evidence set; hashes to a real value, not a sentinel",
+      "subject": {
+        "spec": "xerbs-canonical-hash/1",
+        "kind": "EVIDENCE_SET",
+        "evidence": []
+      },
+      "canonical_json": "{\"evidence\":[],\"kind\":\"EVIDENCE_SET\",\"spec\":\"xerbs-canonical-hash/1\"}",
+      "sha256": "d441e59a4d822f861c033beeaa27b1b09e34e2c4c4228ec312b17b4d2d64e4de"
+    }
+  ]
+}

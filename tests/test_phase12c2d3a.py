@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import simulate_core_attestation_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 
@@ -147,6 +148,12 @@ def _linked_pattern(formula_id,formula_source):
     r=c.post('/api/v1/safety/relationships',json={'source_entity_id':pattern,'target_entity_id':formula_id,
         'relationship_type':'PATTERN_FORMULA','source_id':formula_source,'actor_id':'reviewer','actor_role':'CLINICAL_REVIEWER'})
     assert r.status_code==200, r.text
+    # X1D-AIV2-GOV2-C1: attest the relationship but leave its evidence
+    # Source alone -- this test's whole point is that a DRAFT Source
+    # withholds eligibility, and drive_source() below is what changes it.
+    simulate_core_attestation_for_test('CLINICAL_RELATIONSHIP',
+                                       r.json()['id'],
+                                       ensure_reviewed_evidence=False)
     return pattern
 
 

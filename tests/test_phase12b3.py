@@ -1,4 +1,5 @@
 import os
+from tests.governed_fixtures import simulate_core_attestation_for_test
 os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 from fastapi.testclient import TestClient
@@ -25,7 +26,12 @@ def reviewed(entity_type,payload):
 def add_rule(target_entity_id,source_id,rule_type='DRUG_INTERACTION',trigger_term='warfarin',severity='CRITICAL',action='BLOCK',message='Reviewed interaction'):
     r=c.post(RULES,json={'target_entity_id':target_entity_id,'rule_type':rule_type,'trigger_term':trigger_term,'severity':severity,'action':action,'message':message,'source_id':source_id,'actor_id':'reviewer','actor_role':'CLINICAL_REVIEWER'})
     assert r.status_code==200, r.text
-    return r.json()['id']
+    rule_id=r.json()['id']
+    # X1D-AIV2-GOV2-C1: a rule is created DRAFT and is not effective.
+    # These tests are about lookup and screening, so stand in for the
+    # future core attestation rather than dropping their coverage.
+    simulate_core_attestation_for_test('SAFETY_RULE',rule_id)
+    return rule_id
 
 
 def ruled_herb():
@@ -145,12 +151,19 @@ def test_read_endpoint_does_not_change_screening_behavior():
     assert 'eligible_for_selection' not in c.get(RULES,params={'target_entity_id':formula}).json()
 
 
-def test_existing_post_safety_rule_behavior_is_unchanged():
+def test_post_safety_rule_now_starts_draft_gov2c1():
+    """X1D-AIV2-GOV2-C1 breaking change, asserted rather than removed.
+
+    A safety rule can carry action=BLOCK, so 'REVIEWED because the
+    constructor said so' meant an unreviewed rule could decide what a
+    patient may buy.
+    """
     herb,src=reviewed('herb',{'name':'Phase12B3 POST Herb '+uuid4().hex[:6]})
     ok=c.post(RULES,json={'target_entity_id':herb,'rule_type':'CONTRAINDICATION','trigger_term':'pregnancy','severity':'HIGH','action':'WARN','message':'Reviewed contraindication','source_id':src,'actor_id':'reviewer','actor_role':'CLINICAL_REVIEWER'})
     assert ok.status_code==200, ok.text
-    assert set(ok.json())=={'id','target_entity_id','rule_type','review_status'}
-    assert ok.json()['review_status']=='REVIEWED'
+    assert {'id','target_entity_id','rule_type','review_status'} <= set(ok.json())
+    assert ok.json()['review_status']=='DRAFT'
+    assert ok.json()['clinical_ranking_eligible'] is False
     # Governance still enforced exactly as before.
     unauthorized=c.post(RULES,json={'target_entity_id':herb,'rule_type':'ALLERGY','trigger_term':'x','message':'x','source_id':src,'actor_id':'x','actor_role':'PATIENT'})
     assert unauthorized.status_code==422 and 'not authorized' in unauthorized.json()['detail']

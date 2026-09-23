@@ -68,7 +68,11 @@ def test_pattern_formula_relationship_retrieval_is_deterministic():
     pid=_reviewed(store,ClinicalEntityType.PATTERN,'Phase9 Pattern','p9-pattern')
     fid=_reviewed(store,ClinicalEntityType.FORMULA,'Phase9 Formula','p9-formula',ingredients=['Herb X'])
     with Session.begin() as s:
-        s.add(ClinicalRelationship(id='rel-phase9',source_entity_id=pid,target_entity_id=fid,relationship_type='PATTERN_FORMULA',review_status='REVIEWED',source_id=None,created_by='reviewer'))
+        s.add(ClinicalRelationship(id='rel-phase9',source_entity_id=pid,target_entity_id=fid,relationship_type='PATTERN_FORMULA',review_status='REVIEWED',source_id=None,created_by='reviewer',
+            # X1D-AIV2-GOV2-C1: a REVIEWED status alone no longer confers
+            # eligibility. This fixture writes the row directly, so it
+            # also writes the governance proof a real one would carry.
+            governance_provenance='LEGACY_UNREVIEWED'))
     assert store.eligible_formula_candidates_for_patterns([pid])==[]   # Sources still DRAFT
     approve_source(store,'p9-formula')
     found=store.eligible_formula_candidates_for_patterns([pid])
