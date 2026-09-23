@@ -711,6 +711,261 @@ class AttestedReviewService:
                 "unreachable": unreachable, "details": details}
 
 
+    # ------------------------------------------------------------------
+    # X1D-CORE-ATTEST-B1: read-only inspection surfaces for the xerbs-core
+    # admin review console.
+    #
+    # These make no decision and write nothing. They exist because core
+    # cannot present evidence it cannot read: a reviewer asked to approve
+    # "CLINICAL_ENTITY frm-abc123 v3" and nothing else is not reviewing, and
+    # the content hash they are asked to stand behind is computed here.
+    #
+    # Candidates are enumerated locally, but what each one BINDS to is still
+    # produced by the one set of adapters that approval itself uses. A second
+    # implementation would eventually disagree with the first, and the
+    # direction of that disagreement is not predictable.
+    # ------------------------------------------------------------------
+
+    #: Enumerable governed rows per type, used only to FIND candidates.
+    QUEUE_MODELS = {
+        SOURCE: (SourceRegistry, "source_id"),
+        CLINICAL_ENTITY: (ClinicalEntity, "id"),
+        CLINICAL_RELATIONSHIP: (ClinicalRelationship, "id"),
+        SAFETY_RULE: (SafetyRule, "id"),
+    }
+
+    #: States in which an object still awaits a human decision. REVIEWED is
+    #: deliberately absent -- it is not pending, whatever its provenance says.
+    PENDING_STATES = (lifecycle.DRAFT, lifecycle.IN_REVIEW)
+
+    def _describe(self, s, object_type: str, row, object_id: str) -> dict:
+        """One queue entry: what it is, and whether it can be attested at all.
+
+        An object that cannot be bound is reported WITH its reason rather than
+        omitted. Silently dropping the legacy rows would make the queue look
+        like a complete worklist when it is not, and "this cannot be reviewed
+        until it has a semantic identity" is precisely what an operator needs
+        to see.
+        """
+        entry = {
+            "object_type": object_type,
+            "object_id": object_id,
+            "review_status": getattr(row, "review_status", None),
+            "governance_provenance": getattr(row, "governance_provenance", None),
+            "review_attestation_id": getattr(row, "review_attestation_id", None),
+            "attestable": False,
+            "ineligible_reason": None,
+            "ineligible_code": None,
+        }
+        try:
+            _, local = ADAPTERS[object_type](s, object_id)
+        except AttestedReviewError as exc:
+            entry["ineligible_code"] = exc.code
+            entry["ineligible_reason"] = exc.message
+            return entry
+
+        entry.update({
+            "semantic_object_id": local.semantic_object_id,
+            "object_version": local.object_version,
+            "content_hash": local.content_hash,
+            "evidence_hash": local.evidence_hash,
+            "author_subject": local.author_subject,
+            "submitter_subject": local.submitter_subject,
+            "last_material_editor_subject": local.last_material_editor_subject,
+            "author_kind": identity.classify_subject(local.author_subject),
+            "submitter_kind": identity.classify_subject(local.submitter_subject),
+            "last_material_editor_kind":
+                identity.classify_subject(local.last_material_editor_subject),
+        })
+        # Only IN_REVIEW can receive a decision; a DRAFT has not been offered
+        # for one yet. Reported rather than filtered, so the operator can see
+        # what is waiting on submission versus waiting on a human.
+        if local.review_status != lifecycle.IN_REVIEW:
+            entry["ineligible_code"] = "OBJECT_NOT_IN_REVIEW"
+            entry["ineligible_reason"] = (
+                "only IN_REVIEW objects can receive an attested review "
+                "decision; this one is %s" % local.review_status)
+        else:
+            entry["attestable"] = True
+        return entry
+
+    def pending_queue(self, *, object_types=None, limit: int = 200) -> dict:
+        """Governed objects awaiting a human decision. Read-only.
+
+        ``limit`` is PER TYPE, not across all four. One global budget lets
+        whichever type is enumerated first consume the whole thing and leave
+        the rest invisible -- with a few thousand pending Sources an operator
+        would see a queue containing no relationships and no safety rules at
+        all, with nothing to indicate any existed. Starving three categories
+        to page a fourth is not a paging policy.
+
+        Newest first: a worklist that always shows the oldest rows never
+        surfaces the work that just arrived.
+
+        ``counts_by_type`` is the true pending total per type, counted
+        independently of the limit, so truncation is visible rather than
+        implied.
+        """
+        types = tuple(object_types) if object_types else OBJECT_TYPES
+        unknown = [t for t in types if t not in self.QUEUE_MODELS]
+        if unknown:
+            raise AttestedReviewError("unknown object_type %r" % unknown[0],
+                                      code="UNKNOWN_OBJECT_TYPE")
+        items, counts = [], {}
+        with self.Session() as s:
+            for object_type in types:
+                model, id_column = self.QUEUE_MODELS[object_type]
+                pending = select(model).where(
+                    model.review_status.in_(self.PENDING_STATES))
+                counts[object_type] = len(s.scalars(pending).all())
+                rows = s.scalars(pending.order_by(
+                    model.created_at.desc()).limit(limit)).all()
+                for row in rows:
+                    items.append(self._describe(
+                        s, object_type, row, getattr(row, id_column)))
+        return {
+            "items": items,
+            "counts_by_type": counts,
+            "returned": len(items),
+            "limit_per_type": limit,
+            "truncated": sum(counts.values()) > len(items),
+        }
+
+    def binding_detail(self, *, object_type: str, object_id: str) -> dict:
+        """Everything a human needs before deciding. Read-only.
+
+        Missing provenance is reported as missing rather than defaulted. A
+        blank author rendered as an empty string reads like "nobody in
+        particular"; reported as MISSING it reads like what it is.
+        """
+        if object_type not in ADAPTERS:
+            raise AttestedReviewError("unknown object_type %r" % object_type,
+                                      code="UNKNOWN_OBJECT_TYPE")
+        with self.Session() as s:
+            model, id_column = self.QUEUE_MODELS[object_type]
+            row = s.get(model, object_id)
+            if row is None:
+                raise AttestedReviewError(
+                    "%s %s not found" % (object_type, object_id),
+                    code="OBJECT_NOT_FOUND")
+            entry = self._describe(s, object_type, row, object_id)
+
+            # ---- content the reviewer is being asked to stand behind ------
+            if object_type == CLINICAL_ENTITY:
+                snap = s.scalars(select(ClinicalEntityVersion).where(
+                    ClinicalEntityVersion.entity_id == object_id,
+                    ClinicalEntityVersion.version == row.current_version)).first()
+                entry["content"] = dict(snap.snapshot) if snap else None
+            elif object_type == SOURCE:
+                entry["content"] = {
+                    "source_id": row.source_id, "title": row.title,
+                    "citation": row.citation, "url": row.url,
+                    "source_type": row.source_type}
+            elif object_type == CLINICAL_RELATIONSHIP:
+                entry["content"] = {
+                    "source_entity_id": row.source_entity_id,
+                    "target_entity_id": row.target_entity_id,
+                    "relationship_type": row.relationship_type}
+            else:
+                entry["content"] = {
+                    "target_entity_id": row.target_entity_id,
+                    "rule_type": row.rule_type, "trigger_term": row.trigger_term,
+                    "severity": row.severity, "action": row.action,
+                    "message": row.message}
+
+            # ---- evidence, with each source's own review state -------------
+            if object_type == CLINICAL_ENTITY:
+                pairs = [(es.source_id, es.source_version, es.locator)
+                         for es in s.scalars(select(EntitySource).where(
+                             EntitySource.entity_id == object_id)).all()]
+            elif object_type == SOURCE:
+                pairs = []
+            else:
+                pairs = [(g.source_id, g.source_version, g.locator)
+                         for g in s.scalars(select(GovernedObjectSource).where(
+                             GovernedObjectSource.object_type == object_type,
+                             GovernedObjectSource.object_id == object_id)).all()]
+            evidence = []
+            for source_id, source_version, locator in pairs:
+                src = s.get(SourceRegistry, source_id)
+                evidence.append({
+                    "source_id": source_id,
+                    "source_version": source_version,
+                    "locator": locator,
+                    "title": src.title if src else None,
+                    "citation": src.citation if src else None,
+                    "url": src.url if src else None,
+                    "source_type": src.source_type if src else None,
+                    "review_status": src.review_status if src else None,
+                    "missing_from_registry": src is None,
+                })
+            entry["evidence"] = evidence
+            entry["reviewed_evidence_count"] = sum(
+                1 for e in evidence if e["review_status"] == lifecycle.REVIEWED)
+
+            # ---- governance history, both streams --------------------------
+            history = [{
+                "stream": "governed_object_review_event",
+                "action": ev.action, "actor_subject": ev.actor_subject,
+                "actor_kind": identity.classify_subject(ev.actor_subject),
+                "actor_recorded_as": ev.actor_subject,
+                "from_status": ev.from_status, "to_status": ev.to_status,
+                "version": ev.version, "attestation_id": ev.attestation_id,
+                "notes": ev.notes,
+                "created_at": ev.created_at.isoformat() if ev.created_at else None,
+            } for ev in s.scalars(select(GovernedObjectReviewEvent).where(
+                GovernedObjectReviewEvent.object_type == object_type,
+                GovernedObjectReviewEvent.object_id == object_id)
+                .order_by(GovernedObjectReviewEvent.created_at)).all()]
+
+            if object_type == CLINICAL_ENTITY:
+                legacy = s.scalars(select(ReviewEvent).where(
+                    ReviewEvent.entity_id == object_id)
+                    .order_by(ReviewEvent.created_at)).all()
+            elif object_type == SOURCE:
+                legacy = s.scalars(select(SourceReviewEvent).where(
+                    SourceReviewEvent.source_id == object_id)
+                    .order_by(SourceReviewEvent.created_at)).all()
+            else:
+                legacy = []
+            for ev in legacy:
+                subject = identity.as_subject(ev.actor_id)
+                history.append({
+                    "stream": "legacy_review_event",
+                    "action": ev.action,
+                    "actor_subject": subject,
+                    "actor_kind": identity.classify_subject(subject),
+                    "actor_recorded_as": ev.actor_id,
+                    "from_status": ev.from_status, "to_status": ev.to_status,
+                    "version": ev.version, "attestation_id": None,
+                    "notes": ev.notes,
+                    "created_at": ev.created_at.isoformat() if ev.created_at else None,
+                })
+            history.sort(key=lambda h: (h["created_at"] or "", h["stream"]))
+            entry["history"] = history
+
+            # ---- what is NOT known, said out loud --------------------------
+            missing = [f for f in ("semantic_object_id", "content_hash",
+                                   "evidence_hash", "author_subject",
+                                   "submitter_subject",
+                                   "last_material_editor_subject")
+                       if entry.get(f) in (None, "")]
+            if entry.get("author_kind") == "UNKNOWN":
+                missing.append("author_subject_is_legacy_unknown")
+            if not evidence and object_type != SOURCE:
+                missing.append("evidence")
+            entry["missing_provenance"] = missing
+
+            # ---- durable approval state, not the column --------------------
+            entry["has_verified_attested_approval"] = (
+                has_verified_attested_approval(
+                    s, object_type, object_id,
+                    entry.get("object_version") or 0,
+                    entry.get("review_attestation_id"))
+                if entry.get("review_attestation_id") else False)
+        return entry
+
+
 def has_verified_attested_approval(s, object_type: str, object_id: str,
                                    version: int, attestation_id: str | None) -> bool:
     """Durable proof that THIS version was approved under THIS attestation.

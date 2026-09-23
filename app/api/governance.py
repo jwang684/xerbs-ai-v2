@@ -66,6 +66,77 @@ class SubmitForReviewRequest(BaseModel):
     submitted_by: str = Field(min_length=1, max_length=128)
 
 
+class ReconcileRequest(BaseModel):
+    """Bounded, operator-initiated reconciliation. Names no decision."""
+
+    limit: int | None = Field(default=None, ge=1, le=1000)
+
+
+@router.get("/pending-review")
+def pending_review_queue(
+    object_type: str | None = None,
+    limit: int = 200,
+):
+    """Governed objects awaiting a human decision. Read-only.
+
+    X1D-CORE-ATTEST-B1. xerbs-core's admin console reads this to build a
+    review worklist. It is served over the existing service credential and is
+    never reachable from a browser, because the browser has no such token --
+    core proxies it behind its own authenticated admin session.
+
+    Objects that cannot be attested at all are returned WITH their reason
+    rather than filtered out. A queue that silently hides the legacy rows
+    would look complete while being partial.
+    """
+    try:
+        return attested_review_service.pending_queue(
+            object_types=[object_type] if object_type else None,
+            limit=max(1, min(int(limit), 1000)))
+    except AttestedReviewError as exc:
+        raise HTTPException(_STATUS.get(exc.code, 422),
+                            detail={"code": exc.code, "message": exc.message}) from exc
+
+
+@router.get("/pending-review/{object_type}/{object_id}")
+def pending_review_detail(object_type: str, object_id: str):
+    """Full evidence and provenance for one object. Read-only.
+
+    This is what makes review review: content, semantic identity, version,
+    both hashes, every attached source with its own review state, the author /
+    submitter / last-material-editor subjects with whether each is HUMAN,
+    MACHINE or UNKNOWN, the full governance history from both event streams,
+    and an explicit list of what is missing.
+    """
+    try:
+        return attested_review_service.binding_detail(
+            object_type=object_type, object_id=object_id)
+    except AttestedReviewError as exc:
+        raise HTTPException(_STATUS.get(exc.code, 422),
+                            detail={"code": exc.code, "message": exc.message}) from exc
+
+
+@router.post("/reconcile")
+def reconcile(request: ReconcileRequest,
+              correlation_id: str | None = Header(default=None,
+                                                  alias="X-Correlation-ID")):
+    """Run the existing reconciliation once, on demand.
+
+    X1D-CORE-ATTEST-B1 exposes the entry point that X1D-AIV2-GOVCLOSURE1
+    implemented and left uncallable. No new algorithm: this calls
+    ``reconcile_attested_approvals`` and returns exactly what it reports.
+
+    Deliberately not scheduled. There is no cron, no background loop and no
+    recurring automation in this repository, and adding one is a separate
+    authorization. Idempotent, mints nothing, and fails closed per attestation
+    when core cannot be reached -- an unreachable attestation is reported
+    UNCHECKED, never assumed still-approved and never revoked on a guess.
+    """
+    result = attested_review_service.reconcile_attested_approvals(
+        limit=request.limit)
+    result["correlation_id"] = correlation_id
+    return result
+
+
 @router.post("/{object_type}/{object_id}/submit-review")
 def submit_for_review(object_type: str, object_id: str,
                       request: SubmitForReviewRequest):

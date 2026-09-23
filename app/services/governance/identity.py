@@ -81,6 +81,36 @@ MACHINE_PRINCIPALS = frozenset({
 #: assert it rather than trusting that nobody adds one later.
 PRINCIPALS_THAT_MAY_HUMAN_APPROVE: frozenset = frozenset()
 
+#: The only shape a human identity can take anywhere in this system: an
+#: authenticated xerbs-core administrator. X1D-CORE-ATTEST-B1.
+HUMAN_SUBJECT_PREFIX = "%s:admin:" % CORE
+
+
+def is_human_subject(subject: str | None) -> bool:
+    """True only for an authenticated xerbs-core admin subject.
+
+    Everything else -- every principal in this service, every service
+    identity, and LEGACY_UNKNOWN -- is a machine or an absence. Deliberately a
+    whitelist of one shape rather than a blacklist of known machines: a machine
+    actor nobody has enumerated yet must not read as human by default, which is
+    exactly how ``phase12c4b-automation`` came to look like a reviewer.
+    """
+    return bool(subject) and subject.startswith(HUMAN_SUBJECT_PREFIX)
+
+
+def classify_subject(subject: str | None) -> str:
+    """HUMAN | MACHINE | UNKNOWN -- for honest presentation, not authority.
+
+    UNKNOWN is its own answer rather than being folded into MACHINE: "a machine
+    did this" and "nobody recorded who did this" are different facts, and an
+    admin UI that conflates them tells the reviewer something false.
+    """
+    if subject is None or subject == LEGACY_UNKNOWN:
+        return "UNKNOWN"
+    if is_human_subject(subject):
+        return "HUMAN"
+    return "MACHINE"
+
 
 def as_subject(actor: str | None) -> str:
     """Best-effort mapping of a historical free-text actor to a subject.
