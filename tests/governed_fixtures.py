@@ -264,17 +264,35 @@ def drive_source_to_reviewed(client, source_id: str):
     """
     got = client.get("/api/v1/knowledge/clinical/sources/%s" % source_id)
     assert got.status_code == 200, got.text
-    version = got.json()["version"]
+    state = got.json()
 
-    r = client.post("/api/v1/knowledge/clinical/sources/%s/submit-review" % source_id,
-                    json={"submitted_by": "synth-author", "expected_version": version})
-    assert r.status_code == 200, r.text
-    version = r.json()["version"]
+    if state["review_status"] == "REVIEWED":
+        return state
+    if state["review_status"] == "DRAFT":
+        r = client.post(
+            "/api/v1/knowledge/clinical/sources/%s/submit-review" % source_id,
+            json={"submitted_by": "synth-author",
+                  "expected_version": state["version"]})
+        assert r.status_code == 200, r.text
+        state = r.json()
+    assert state["review_status"] == "IN_REVIEW", state["review_status"]
 
-    r = client.post("/api/v1/knowledge/clinical/sources/%s/review" % source_id,
-                    json={"reviewer_id": "synth-source-reviewer",
-                          "reviewer_role": "CLINICAL_REVIEWER",
-                          "decision": "APPROVE", "expected_version": version})
-    assert r.status_code == 200, r.text
-    assert r.json()["review_status"] == "REVIEWED"
-    return r.json()
+    # X1D-AIV2-GOVCLOSURE1: source APPROVE is closed to request-body roles.
+    # Approval runs the real attested path against a stub core, so the fixture
+    # exercises verification rather than skipping it.
+    attested_approve("SOURCE", source_id)
+    got = client.get("/api/v1/knowledge/clinical/sources/%s" % source_id)
+    assert got.json()["review_status"] == "REVIEWED", got.text
+    return got.json()
+
+
+def approve_source_for_test(source_id: str, session_factory=None):
+    """Attested source approval for store-level tests.
+
+    The request-body approval path is closed; a Source reaching REVIEWED is
+    what makes everything downstream ranking-eligible, so it goes through the
+    same verification as any other governed object.
+    """
+    result, _record, _svc = attested_approve("SOURCE", source_id,
+                                             session_factory=session_factory)
+    return result

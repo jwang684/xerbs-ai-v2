@@ -45,6 +45,9 @@ from app.services.governance.attestation_client import (AttestationLookupError,
                                                         CoreAttestationClient)
 
 APPROVED_BY_ATTESTATION = "APPROVED_BY_ATTESTATION"
+#: X1D-AIV2-GOVCLOSURE1. Written beside the approval, never instead of it:
+#: pretending the review never happened would be its own falsification.
+ATTESTATION_REVOKED = "ATTESTATION_REVOKED"
 
 SOURCE = "SOURCE"
 CLINICAL_ENTITY = "CLINICAL_ENTITY"
@@ -260,6 +263,15 @@ def _apply_approval(s, row, object_type, attestation_id, reviewer_subject,
         row.reviewed_by = reviewer_subject
         row.updated_at = now
         row.version = new_version
+        # The Source keeps its own append-only governance trail, and an
+        # approval that skipped it would leave a gap exactly where the
+        # decision was. Written through the store's existing helper so the
+        # source_review_event / audit_event pair stays in step.
+        from app.services.knowledge.persistent_clinical import PersistentClinicalStore
+        PersistentClinicalStore._add_source_event(
+            s, row, "APPROVED", reviewer_subject, "CLINICAL_REVIEWER",
+            "IN_REVIEW", lifecycle.REVIEWED,
+            "approved against verified xerbs-core attestation %s" % attestation_id)
     else:
         # Explicit per type. Setting an attribute that is not a mapped column
         # is silently accepted by SQLAlchemy and lost on commit -- which is
@@ -471,6 +483,31 @@ class AttestedReviewService:
                                 "object_version": local.object_version,
                                 "review_attestation_id": event.attestation_id,
                                 "idempotent_replay": True}
+                    was_revoked = s.scalars(select(GovernedObjectReviewEvent).where(
+                        GovernedObjectReviewEvent.object_type == object_type,
+                        GovernedObjectReviewEvent.object_id == object_id,
+                        GovernedObjectReviewEvent.action == ATTESTATION_REVOKED,
+                        GovernedObjectReviewEvent.attestation_id
+                        == event.attestation_id)).first()
+                    if was_revoked is not None:
+                        # X1D-AIV2-GOVCLOSURE1 deliberately stops here.
+                        #
+                        # Re-approving the SAME version after a revocation
+                        # would need the event stream to hold two
+                        # APPROVED_BY_ATTESTATION rows at one version, which
+                        # the per-action uniqueness forbids -- and relaxing
+                        # that would make "which approval is live?" ambiguous
+                        # exactly where ambiguity is most expensive. So the
+                        # re-review workflow is deferred rather than guessed
+                        # at, and this fails closed with a reason.
+                        raise AttestedReviewError(
+                            "version %d was approved under attestation %s and "
+                            "that approval was revoked; re-approving the same "
+                            "version is not supported, because the event "
+                            "stream cannot represent two approvals at one "
+                            "version unambiguously. Produce a new version."
+                            % (event.version, event.attestation_id),
+                            code="RE_APPROVAL_AFTER_REVOCATION_UNSUPPORTED")
                     raise AttestedReviewError(
                         "version %d of this object was already approved under "
                         "attestation %s; a different attestation cannot be "
@@ -521,6 +558,159 @@ class AttestedReviewService:
                     "idempotent_replay": False}
 
 
+    # -- revocation ------------------------------------------------------
+    def revoke(self, *, attestation_id: str, correlation_id=None,
+               idempotency_key=None) -> dict:
+        """Withdraw a previously verified approval, after checking with core.
+
+        The request names an attestation and nothing this service is expected
+        to believe. ai-v2 reads core's authoritative record itself and refuses
+        unless core really says the decision is no longer active -- so a
+        leaked service credential can ask for a re-check, but cannot
+        un-approve something that still stands.
+
+        The original approval event is never deleted. What changes is that a
+        revocation event now sits beside it, and eligibility accounts for it.
+        """
+        with self.Session() as s:
+            approval = s.scalars(select(GovernedObjectReviewEvent).where(
+                GovernedObjectReviewEvent.action == APPROVED_BY_ATTESTATION,
+                GovernedObjectReviewEvent.attestation_id == attestation_id)
+                .order_by(GovernedObjectReviewEvent.version.desc())).first()
+            if approval is None:
+                raise AttestedReviewError(
+                    "no local approval was made under attestation %s"
+                    % attestation_id, code="LOCAL_APPROVAL_NOT_FOUND")
+            object_type = approval.object_type
+            object_id = approval.object_id
+            approved_version = approval.version
+
+            already = s.scalars(select(GovernedObjectReviewEvent).where(
+                GovernedObjectReviewEvent.object_type == object_type,
+                GovernedObjectReviewEvent.object_id == object_id,
+                GovernedObjectReviewEvent.action == ATTESTATION_REVOKED,
+                GovernedObjectReviewEvent.attestation_id == attestation_id)).first()
+            if already is not None:
+                # A redelivered notification is not a second revocation, and
+                # must not read as a failure.
+                return {"object_type": object_type, "object_id": object_id,
+                        "attestation_id": attestation_id,
+                        "object_version": already.version,
+                        "idempotent_replay": True}
+
+        try:
+            att = self._client.fetch(attestation_id, correlation_id=correlation_id)
+        except AttestationLookupError as exc:
+            # Fail closed in this direction too: without core's word we do not
+            # know the approval was withdrawn, and guessing either way would be
+            # wrong. Reconciliation retries later.
+            raise AttestedReviewError(exc.message, code=exc.code) from exc
+
+        if att.get("is_active"):
+            raise AttestedReviewError(
+                "xerbs-core reports attestation %s is still active; refusing "
+                "to revoke a standing approval" % attestation_id,
+                code="ATTESTATION_STILL_ACTIVE")
+
+        with self.Session.begin() as s:
+            row, local = ADAPTERS[object_type](s, object_id)
+            if (att.get("governance_object_type") != object_type
+                    or att.get("semantic_object_id") != local.semantic_object_id):
+                raise AttestedReviewError(
+                    "attestation %s does not describe this object"
+                    % attestation_id, code="SUBJECT_MISMATCH")
+
+            before = row.review_status
+            # Back to IN_REVIEW, not DRAFT and not RETIRED. The content did not
+            # change, so DRAFT would misdescribe it; the object is not being
+            # withdrawn, so RETIRED would too. What actually happened is that it
+            # is once again waiting for a decision.
+            row.review_status = lifecycle.IN_REVIEW
+            now = datetime.now(timezone.utc)
+            if object_type == SOURCE:
+                row.reviewed_by = None
+                row.updated_at = now
+            else:
+                row.governance_provenance = lifecycle.ATTESTATION_REVOKED
+                # Cleared so a later approval cannot silently reuse it; the
+                # event stream keeps the history.
+                row.review_attestation_id = None
+                row.reviewed_at = None
+                if object_type in (CLINICAL_RELATIONSHIP, SAFETY_RULE):
+                    row.updated_at = now
+
+            s.add(GovernedObjectReviewEvent(
+                event_id="govevt-%s" % uuid4().hex[:16],
+                object_type=object_type, object_id=object_id,
+                action=ATTESTATION_REVOKED,
+                actor_subject=att.get("reviewer_subject") or identity.SERVICE_CORE,
+                from_status=before, to_status=lifecycle.IN_REVIEW,
+                version=approved_version, attestation_id=attestation_id,
+                notes="xerbs-core reports revoked=%s superseded=%s; reason=%s; "
+                      "correlation=%s; idempotency=%s"
+                      % (att.get("is_revoked"), att.get("is_superseded"),
+                         att.get("revocation_reason") or "-",
+                         correlation_id or "-", idempotency_key or "-")))
+
+            return {"object_type": object_type, "object_id": object_id,
+                    "attestation_id": attestation_id,
+                    "object_version": approved_version,
+                    "review_status": lifecycle.IN_REVIEW,
+                    "idempotent_replay": False}
+
+    # -- reconciliation --------------------------------------------------
+    def reconcile_attested_approvals(self, *, limit=None) -> dict:
+        """Find local approvals that xerbs-core no longer stands behind.
+
+        This exists because a revocation in core can succeed while the
+        notification to ai-v2 fails, and unwinding a human decision because a
+        network call failed would be the wrong direction entirely. Without
+        this, that gap was unbounded.
+
+        Deliberately a job entry point, not a background loop: no polling and
+        no schedule in this repository. Idempotent, so running it twice is as
+        safe as running it once, and it reports what it could not check rather
+        than assuming.
+        """
+        checked = revoked = unreachable = 0
+        details = []
+        with self.Session() as s:
+            approvals = s.scalars(select(GovernedObjectReviewEvent).where(
+                GovernedObjectReviewEvent.action == APPROVED_BY_ATTESTATION)
+                .order_by(GovernedObjectReviewEvent.created_at)).all()
+            live = [ev.attestation_id for ev in approvals
+                    if has_verified_attested_approval(
+                        s, ev.object_type, ev.object_id, ev.version,
+                        ev.attestation_id)]
+        if limit is not None:
+            live = live[:limit]
+
+        for attestation_id in live:
+            checked += 1
+            try:
+                att = self._client.fetch(attestation_id)
+            except AttestationLookupError as exc:
+                unreachable += 1
+                details.append({"attestation_id": attestation_id,
+                                "outcome": "UNCHECKED", "code": exc.code})
+                continue
+            if att.get("is_active"):
+                details.append({"attestation_id": attestation_id,
+                                "outcome": "STILL_ACTIVE"})
+                continue
+            try:
+                self.revoke(attestation_id=attestation_id,
+                            correlation_id="reconciliation")
+                revoked += 1
+                details.append({"attestation_id": attestation_id,
+                                "outcome": "REVOKED_LOCALLY"})
+            except AttestedReviewError as exc:
+                details.append({"attestation_id": attestation_id,
+                                "outcome": "REVOKE_FAILED", "code": exc.code})
+        return {"checked": checked, "revoked": revoked,
+                "unreachable": unreachable, "details": details}
+
+
 def has_verified_attested_approval(s, object_type: str, object_id: str,
                                    version: int, attestation_id: str | None) -> bool:
     """Durable proof that THIS version was approved under THIS attestation.
@@ -539,7 +729,19 @@ def has_verified_attested_approval(s, object_type: str, object_id: str,
         GovernedObjectReviewEvent.action == APPROVED_BY_ATTESTATION,
         GovernedObjectReviewEvent.version == version,
         GovernedObjectReviewEvent.attestation_id == attestation_id)).first()
-    return row is not None
+    if row is None:
+        return False
+
+    # X1D-AIV2-GOVCLOSURE1: a withdrawn approval is not an approval. Checked
+    # here rather than only at revocation time, so restoring the columns by
+    # hand -- review_status, provenance, attestation id -- cannot resurrect
+    # eligibility: the revocation event is still there and still wins.
+    revoked = s.scalars(select(GovernedObjectReviewEvent).where(
+        GovernedObjectReviewEvent.object_type == object_type,
+        GovernedObjectReviewEvent.object_id == object_id,
+        GovernedObjectReviewEvent.action == ATTESTATION_REVOKED,
+        GovernedObjectReviewEvent.attestation_id == attestation_id)).first()
+    return revoked is None
 
 
 attested_review_service = AttestedReviewService()

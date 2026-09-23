@@ -43,6 +43,19 @@ def review(source_id,version,decision='APPROVE',role='CLINICAL_REVIEWER',actor='
     return c.post(f'{SOURCES}/{source_id}/review',json=body)
 
 
+def approve(source_id):
+    """X1D-AIV2-GOVCLOSURE1: source APPROVE is attested, not request-body.
+
+    A REVIEWED Source is what makes everything downstream ranking-eligible,
+    so approving one is a human clinical decision like any other and now runs
+    the real verification path. Returns the refreshed record so call sites
+    that read ``.json()['version']`` keep working.
+    """
+    from tests.governed_fixtures import attested_approve
+    attested_approve("SOURCE", source_id)
+    return c.get(f'{SOURCES}/{source_id}')
+
+
 def in_review():
     s,body=created()
     r=submit(s,body['version'])
@@ -100,12 +113,15 @@ def test_d_draft_to_in_review():
 
 def test_e_in_review_to_reviewed():
     s,v=in_review()
-    r=review(s,v,'APPROVE')
+    r=approve(s)
     assert r.status_code==200, r.text
     b=r.json()
     assert b['review_status']=='REVIEWED'
     assert b['version']==3
-    assert b['reviewed_by']=='reviewer'
+    # X1D-AIV2-GOVCLOSURE1: the reviewer is a xerbs-core admin subject, cached
+    # here as an externally asserted identity. ai-v2 has no human users and
+    # must not appear to have authenticated anyone.
+    assert b['reviewed_by'].startswith('xerbs-core:admin:'), b['reviewed_by']
 
 
 def test_f_in_review_to_rejected():
@@ -135,7 +151,7 @@ def test_l_every_successful_transition_increments_version():
     v=submit(s,1).json()['version']; assert v==2
     v=review(s,v,'REQUEST_CHANGES').json()['version']; assert v==3
     v=submit(s,v).json()['version']; assert v==4
-    v=review(s,v,'APPROVE').json()['version']; assert v==5
+    v=approve(s).json()['version']; assert v==5
 
 
 # --- H, I: illegal transitions ---------------------------------------------
@@ -144,13 +160,16 @@ def test_h_illegal_draft_to_reviewed_is_rejected():
     for decision in ('APPROVE','REJECT','REQUEST_CHANGES'):
         r=review(s,body['version'],decision)
         assert r.status_code==409, (decision,r.text)
-        assert 'DRAFT source' in r.json()['detail']
+        # X1D-AIV2-GOVCLOSURE1: APPROVE from DRAFT is now refused one step
+        # earlier, by the closure itself rather than by the state machine.
+        detail = r.json()['detail']
+        assert ('DRAFT source' in detail) or ('attestation' in detail), detail
     assert c.get(f'{SOURCES}/{s}').json()['review_status']=='DRAFT'
 
 
 def test_i_illegal_reviewed_transitions_are_rejected():
     s,v=in_review()
-    v=review(s,v,'APPROVE').json()['version']
+    v=approve(s).json()['version']
     assert c.get(f'{SOURCES}/{s}').json()['review_status']=='REVIEWED'
     # REVIEWED -> IN_REVIEW and REVIEWED -> DRAFT are both refused.
     assert submit(s,v).status_code==409
@@ -177,7 +196,7 @@ def test_j_stale_expected_version_is_rejected_without_writing():
     v=submit(s,1).json()['version']
     assert review(s,1,'APPROVE').status_code==409          # now stale
     assert c.get(f'{SOURCES}/{s}').json()['review_status']=='IN_REVIEW'
-    assert review(s,v,'APPROVE').status_code==200
+    assert approve(s).status_code==200
 
 
 def test_j2_expected_version_is_required():
@@ -193,7 +212,7 @@ def test_k_unauthorized_reviewer_role_is_rejected():
     assert 'not authorized' in bad.json()['detail']
     assert c.get(f'{SOURCES}/{s}').json()['review_status']=='IN_REVIEW'
     assert c.get(f'{SOURCES}/{s}/reviews').json()['count']==2      # no event written
-    assert review(s,v,'APPROVE',role='CLINICAL_ADMIN').status_code==200
+    assert approve(s).status_code==200
 
 
 def test_k2_invalid_decision_is_rejected():
@@ -206,7 +225,7 @@ def test_m_source_review_event_written_exactly_once_per_transition():
     s,body=created()
     assert c.get(f'{SOURCES}/{s}/reviews').json()['count']==1       # CREATED
     v=submit(s,1).json()['version']
-    v=review(s,v,'APPROVE').json()['version']
+    v=approve(s).json()['version']
     hist=c.get(f'{SOURCES}/{s}/reviews').json()
     assert hist['count']==3
     assert [x['action'] for x in hist['results']]==['CREATED','SUBMITTED_FOR_REVIEW','APPROVED']
@@ -219,7 +238,7 @@ def test_m_source_review_event_written_exactly_once_per_transition():
 def test_n_audit_event_source_id_written_exactly_once_per_transition():
     s,_=created()
     v=submit(s,1).json()['version']
-    review(s,v,'APPROVE')
+    approve(s)
     audit=c.get(f'{SOURCES}/{s}/audit').json()
     assert audit['count']==3
     assert [x['event_type'] for x in audit['results']]==['SOURCE_CREATED','SOURCE_SUBMITTED_FOR_REVIEW','SOURCE_APPROVED']
@@ -240,7 +259,7 @@ def test_o_source_audit_does_not_collide_with_same_valued_entity_id():
     # Register a Source using the entity's own id as its source_id.
     assert create(source_id=entity_id).status_code==201
     v=submit(entity_id,1).json()['version']
-    review(entity_id,v,'APPROVE')
+    approve(entity_id)
     # Source audit returns only Source events.
     src_audit=c.get(f'{SOURCES}/{entity_id}/audit').json()
     assert src_audit['count']==3
@@ -371,7 +390,7 @@ def test_w_ingestion_created_source_remains_draft():
 def test_w2_ingestion_can_reuse_a_reviewed_source():
     s,_=created()
     v=submit(s,1).json()['version']
-    assert review(s,v,'APPROVE').status_code==200
+    assert approve(s).status_code==200
     ref={k:v2 for k,v2 in CANON.items() if k!='source_id'}
     ok=_ingest({'source_id':s,**ref})
     assert ok.status_code==200, ok.text
@@ -395,7 +414,7 @@ def test_x_clinical_ranking_eligible_requires_a_reviewed_source():
     assert c.get(f'{SOURCES}/{s}/entities').json()['results'][0]['clinical_ranking_eligible'] is False
     # Approving the Source is what grants eligibility.
     v=submit(s,1).json()['version']
-    assert review(s,v,'APPROVE').status_code==200
+    assert approve(s).status_code==200
     assert c.get(f'{CLINICAL}/entities/formula/{eid}').json()['clinical_ranking_eligible'] is True
 
 
@@ -404,7 +423,7 @@ def test_y_existing_clinical_audit_behavior_is_unchanged():
     before=c.get(f'{CLINICAL}/audit').json()['results']
     s,_=created()
     v=submit(s,1).json()['version']
-    review(s,v,'APPROVE')
+    approve(s)
     after=c.get(f'{CLINICAL}/audit').json()['results']
     # Source governance adds nothing to the clinical entity audit stream.
     assert after==before

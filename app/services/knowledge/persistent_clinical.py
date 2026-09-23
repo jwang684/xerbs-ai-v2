@@ -226,9 +226,28 @@ class PersistentClinicalStore:
                                     request.expected_version, request.notes)
 
     def review_source(self, source_id, request) -> SourceRecord:
-        """IN_REVIEW -> REVIEWED | REJECTED | DRAFT, by an authorized reviewer."""
+        """IN_REVIEW -> REJECTED | DRAFT locally; APPROVE requires attestation.
+
+        X1D-AIV2-GOVCLOSURE1 closed the approval half. A Source becoming
+        REVIEWED is what makes an entity, relationship or safety rule
+        ranking-eligible, so "approved because the request body said
+        CLINICAL_REVIEWER" was the same self-assertion that had already been
+        closed for the other three object types -- it had simply been left
+        open because a Source is bibliographic metadata rather than a clinical
+        claim. It is still the thing that confers eligibility, so it is closed
+        too.
+
+        Rejection and change-requests stay local and unchanged. Making it
+        harder to WITHHOLD approval would be exactly backwards.
+        """
         if request.reviewer_role not in SOURCE_REVIEWER_ROLES:
             raise PersistentWorkflowError("Reviewer role not authorized")
+        if request.decision == SourceReviewDecision.APPROVE:
+            raise PersistentWorkflowError(
+                "Human approval of a Source requires a verified xerbs-core "
+                "attestation; a reviewer_role in the request body is a "
+                "self-assertion. Use the attested-review endpoint with "
+                "object_type=SOURCE.")
         action = SOURCE_DECISION_ACTIONS[request.decision]
         with self.Session.begin() as s:
             row = self._get_source(s, source_id)

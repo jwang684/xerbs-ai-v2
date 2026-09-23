@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from app.main import app
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
+from tests.governed_fixtures import drive_source_to_reviewed
 
 c=TestClient(app)
 CLINICAL='/api/v1/knowledge/clinical'
@@ -49,7 +50,14 @@ def drive_source(source_id,to):
         assert r.status_code==200, r.text
         cur=r.json()
         if to=='IN_REVIEW': return cur
-    decision={'REVIEWED':'APPROVE','REJECTED':'REJECT','DRAFT':'REQUEST_CHANGES'}[to]
+    # X1D-AIV2-GOVCLOSURE1: APPROVE is closed to request-body roles, so the
+    # approval branch runs the real attested path. Rejection and
+    # change-requests stay local -- making it harder to WITHHOLD approval
+    # would be backwards.
+    if to=='REVIEWED':
+        drive_source_to_reviewed(c, source_id)
+        return c.get(f'{SOURCES}/{source_id}').json()
+    decision={'REJECTED':'REJECT','DRAFT':'REQUEST_CHANGES'}[to]
     r=c.post(f'{SOURCES}/{source_id}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':decision,'expected_version':cur['version']})
     assert r.status_code==200, r.text
     return r.json()

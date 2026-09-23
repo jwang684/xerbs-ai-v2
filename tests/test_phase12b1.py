@@ -4,6 +4,7 @@ os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.governed_fixtures import drive_source_to_reviewed
 
 c=TestClient(app)
 BASE='/api/v1/knowledge/clinical'
@@ -108,8 +109,7 @@ def approve_source(source_id):
     cur=c.get(f'{BASE}/sources/{source_id}').json()
     r=c.post(f'{BASE}/sources/{source_id}/submit-review',json={'submitted_by':'phase12b1','expected_version':cur['version']})
     assert r.status_code==200, r.text
-    r=c.post(f'{BASE}/sources/{source_id}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
-    assert r.status_code==200, r.text
+    drive_source_to_reviewed(c, source_id)
 
 
 def test_ranking_eligibility_is_preserved_not_recomputed_loosely():

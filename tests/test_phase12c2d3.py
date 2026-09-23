@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.governed_fixtures import drive_source_to_reviewed
 
 c=TestClient(app)
 CLINICAL='/api/v1/knowledge/clinical'
@@ -57,7 +58,14 @@ def drive_source(source_id,to):
         cur=r.json()
         if to=='IN_REVIEW': return cur
     assert cur['review_status']=='IN_REVIEW', cur['review_status']
-    decision={'REVIEWED':'APPROVE','REJECTED':'REJECT','DRAFT':'REQUEST_CHANGES'}[to]
+    # X1D-AIV2-GOVCLOSURE1: APPROVE is closed to request-body roles, so the
+    # approval branch runs the real attested path. Rejection and
+    # change-requests stay local -- making it harder to WITHHOLD approval
+    # would be backwards.
+    if to=='REVIEWED':
+        drive_source_to_reviewed(c, source_id)
+        return c.get(f'{SOURCES}/{source_id}').json()
+    decision={'REJECTED':'REJECT','DRAFT':'REQUEST_CHANGES'}[to]
     r=c.post(f'{SOURCES}/{source_id}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':decision,'expected_version':cur['version']})
     assert r.status_code==200, r.text
     return r.json()
@@ -247,7 +255,10 @@ def test_p_phase12c2d2_source_governance_unchanged():
     assert c.post(f'{SOURCES}/{s}/submit-review',json={'submitted_by':'x','expected_version':99}).status_code==409
     v=c.post(f'{SOURCES}/{s}/submit-review',json={'submitted_by':'curator','expected_version':1}).json()['version']
     assert c.post(f'{SOURCES}/{s}/review',json={'reviewer_id':'r','reviewer_role':'PATIENT','decision':'APPROVE','expected_version':v}).status_code==409
-    assert c.post(f'{SOURCES}/{s}/review',json={'reviewer_id':'r','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':v}).status_code==200
+    # X1D-AIV2-GOVCLOSURE1: the two refusals above still come from the
+    # endpoint. The approval itself is attested.
+    drive_source_to_reviewed(c, s)
+    assert c.get(f'{SOURCES}/{s}').json()['review_status']=='REVIEWED'
     hist=c.get(f'{SOURCES}/{s}/reviews').json()
     assert [x['action'] for x in hist['results']]==['SUBMITTED_FOR_REVIEW','APPROVED']
     assert c.get(f'{SOURCES}/{s}/audit').json()['count']==2

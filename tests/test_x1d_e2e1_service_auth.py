@@ -302,8 +302,12 @@ class TestGoldenCorpusBootstrap:
 
         first = gc.bootstrap_golden_corpus(
             pc.PersistentClinicalStore(session_factory=factory))
-        assert first["source_status_after"] == "REVIEWED"
+        # X1D-AIV2-GOVCLOSURE1: the Source stops at IN_REVIEW too. A
+        # REVIEWED Source is what confers downstream eligibility, so the
+        # bootstrap may no longer approve one either.
+        assert first["source_status_after"] == "IN_REVIEW"
         assert first["formula_status_after"] == "IN_REVIEW"
+        assert "source_awaiting_human_attestation" in first["actions"]
         assert first["clinical_ranking_eligible"] is False, first
         assert "ingested_formula_as_draft" in first["actions"]
         assert "formula_awaiting_human_attestation" in first["actions"]

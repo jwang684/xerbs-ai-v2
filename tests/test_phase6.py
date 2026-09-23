@@ -9,6 +9,7 @@ from app.services.knowledge.persistent_clinical import PersistentClinicalStore, 
 
 
 from tests.governed_fixtures import approve_entity_for_test
+from tests.governed_fixtures import approve_source_for_test
 def store():
     engine=create_engine("sqlite://",connect_args={"check_same_thread":False},poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -25,8 +26,7 @@ def approve_source(s, source_id):
     from app.schemas.clinical_knowledge import SourceReviewActionRequest, SourceReviewDecision, SourceSubmitReviewRequest
     cur = s.get_source(source_id)
     cur = s.submit_source_for_review(source_id, SourceSubmitReviewRequest(submitted_by="curator", expected_version=cur.version))
-    s.review_source(source_id, SourceReviewActionRequest(reviewer_id="reviewer", reviewer_role="CLINICAL_REVIEWER",
-                                                         decision=SourceReviewDecision.APPROVE, expected_version=cur.version))
+    approve_source_for_test(source_id, session_factory=s.Session)
 
 
 def test_persistent_round_trip_across_store_instances():

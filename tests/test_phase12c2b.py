@@ -4,6 +4,7 @@ os.environ.setdefault('LLM_PROVIDER','mock')
 from uuid import uuid4
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.governed_fixtures import drive_source_to_reviewed
 
 c=TestClient(app)
 CLINICAL='/api/v1/knowledge/clinical'
@@ -226,8 +227,7 @@ def test_k2_reverse_lookup_reflects_review_state_without_recomputing_eligibility
     cur=c.get(f'{SOURCES}/{s}').json()
     r=c.post(f'{SOURCES}/{s}/submit-review',json={'submitted_by':'phase12c2b','expected_version':cur['version']})
     assert r.status_code==200, r.text
-    r=c.post(f'{SOURCES}/{s}/review',json={'reviewer_id':'reviewer','reviewer_role':'CLINICAL_REVIEWER','decision':'APPROVE','expected_version':r.json()['version']})
-    assert r.status_code==200, r.text
+    drive_source_to_reviewed(c, s)
     after=c.get(f'{SOURCES}/{s}/entities').json()['results'][0]
     assert after['clinical_ranking_eligible'] is True
     # Matches the entity detail endpoint exactly - one eligibility rule, not two.

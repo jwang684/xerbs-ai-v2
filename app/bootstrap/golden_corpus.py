@@ -188,20 +188,16 @@ def bootstrap_golden_corpus(store: PersistentClinicalStore | None = None) -> Dic
         status, version = _source_state(store)
 
     if status == "IN_REVIEW":
-        store.review_source(
-            GOLDEN_SOURCE_ID,
-            SourceReviewActionRequest(
-                reviewer_id=BOOTSTRAP_REVIEWER,
-                reviewer_role="CLINICAL_REVIEWER",
-                decision=SourceReviewDecision.APPROVE,
-                expected_version=version,
-                notes=(
-                    "X1D-E2E1 bootstrap: official NHSA 公示 material, verified and "
-                    "human-approved in xerbs-core"
-                ),
-            ),
-        )
-        report["actions"].append("source_approved")
+        # X1D-AIV2-GOVCLOSURE1: the bootstrap stops here for the Source too.
+        #
+        # It used to approve the Source itself, passing
+        # reviewer_role="CLINICAL_REVIEWER". A REVIEWED Source is what makes
+        # everything downstream ranking-eligible, so that was the same machine
+        # self-assertion already closed for the other object types -- it had
+        # simply been left open because a Source is bibliographic metadata.
+        # A fresh environment now holds an IN_REVIEW Source awaiting a
+        # verified xerbs-core attestation.
+        report["actions"].append("source_awaiting_human_attestation")
 
     report["source_status_after"] = _source_state(store)[0]
 

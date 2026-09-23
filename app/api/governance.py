@@ -53,6 +53,10 @@ _STATUS = {
     "SEMANTIC_IDENTITY_MISSING": 409,
     "INVALID_TRANSITION": 409,
     "UNKNOWN_OBJECT_TYPE": 422,
+    "LOCAL_APPROVAL_NOT_FOUND": 404,
+    "ATTESTATION_STILL_ACTIVE": 409,
+    "RE_APPROVAL_AFTER_REVOCATION_UNSUPPORTED": 409,
+    "SUBJECT_MISMATCH": 422,
 }
 
 
@@ -105,5 +109,38 @@ def attested_review(
     except AttestedReviewError as exc:
         # Everything else is a binding mismatch: the attestation is real but
         # does not describe the object this service stores. 422, with the code.
+        raise HTTPException(_STATUS.get(exc.code, 422),
+                            detail={"code": exc.code, "message": exc.message}) from exc
+
+
+class RevokeRequest(BaseModel):
+    """Names an attestation. Nothing here is taken as proof of anything."""
+
+    attestation_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/attested-review/revoke")
+def revoke_attested_review(
+    request: RevokeRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    correlation_id: str | None = Header(default=None, alias="X-Correlation-ID"),
+):
+    """Withdraw a verified approval after confirming it with xerbs-core.
+
+    Core tells this service that a human decision was withdrawn; this service
+    goes and checks. A caller holding the service credential can therefore ask
+    for a re-check of any attestation, and cannot un-approve one that core
+    still stands behind -- the endpoint refuses with ATTESTATION_STILL_ACTIVE.
+
+    Not addressed by object: the attestation id is the thing being withdrawn,
+    and the local approval event is what says which object it touched. Naming
+    the object in the request would invite the two to disagree.
+    """
+    try:
+        return attested_review_service.revoke(
+            attestation_id=request.attestation_id,
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key)
+    except AttestedReviewError as exc:
         raise HTTPException(_STATUS.get(exc.code, 422),
                             detail={"code": exc.code, "message": exc.message}) from exc

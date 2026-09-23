@@ -117,9 +117,15 @@ LEGACY_UNREVIEWED = "LEGACY_UNREVIEWED"
 #: Authored under GOV2, not yet reviewed.
 UNREVIEWED = "UNREVIEWED"
 
+#: Was attested, and xerbs-core has since withdrawn that decision. Kept as a
+#: distinct value rather than reverting to UNREVIEWED: "nobody has reviewed
+#: this yet" and "someone reviewed it and then took it back" are different
+#: facts, and the second one is the one a later reviewer needs to know.
+ATTESTATION_REVOKED = "ATTESTATION_REVOKED"
+
 GOVERNANCE_PROVENANCE = frozenset({
     ATTESTED, LEGACY_SELF_REVIEWED, LEGACY_INDEPENDENTLY_REVIEWED,
-    LEGACY_UNREVIEWED, UNREVIEWED})
+    LEGACY_UNREVIEWED, UNREVIEWED, ATTESTATION_REVOKED})
 
 #: Provenance values that predate GOV2 and therefore carry no verified human
 #: decision. Kept as a set rather than a string test so the ranking predicate

@@ -10,6 +10,7 @@ from app.schemas.clinical_knowledge import SourceRef
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
 
 from tests.governed_fixtures import approve_entity_for_test
+from tests.governed_fixtures import approve_source_for_test
 c=TestClient(app)
 
 def test_adaptive_interview_selects_high_information_questions_and_persists():
@@ -58,8 +59,7 @@ def approve_source(s, source_id):
     from app.schemas.clinical_knowledge import SourceReviewActionRequest, SourceReviewDecision, SourceSubmitReviewRequest
     cur = s.get_source(source_id)
     cur = s.submit_source_for_review(source_id, SourceSubmitReviewRequest(submitted_by="curator", expected_version=cur.version))
-    s.review_source(source_id, SourceReviewActionRequest(reviewer_id="reviewer", reviewer_role="CLINICAL_REVIEWER",
-                                                         decision=SourceReviewDecision.APPROVE, expected_version=cur.version))
+    approve_source_for_test(source_id, session_factory=s.Session)
 
 
 def test_pattern_formula_relationship_retrieval_is_deterministic():
