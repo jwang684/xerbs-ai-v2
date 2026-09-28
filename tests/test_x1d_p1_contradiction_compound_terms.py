@@ -64,3 +64,24 @@ def test_no_negation_means_no_contradiction():
     r = _annotate("外感风热，发热恶寒。", "发热两天，咽痛。")
     assert r.pattern_assessments[0].contradictions == []
     assert r.ready_for_formula_retrieval is True
+
+
+def test_the_models_own_negation_is_agreement_not_a_claim():
+    # Observed live on Staging after the first fix: the model wrote "无发热怕冷" in its
+    # evidence while the patient wrote "没有发热". Both deny fever; that is agreement.
+    r = _annotate("夜间出汗、手心脚心发热、舌偏红，均支持肾阴亏虚。无发热怕冷，亦不支持外感。",
+                  "没有发热怕冷。")
+    assert r.pattern_assessments[0].contradictions == []
+    assert r.ready_for_formula_retrieval is True
+
+
+def test_every_negated_form_in_the_evidence_is_agreement():
+    for phrase in ("无发热", "没有发热", "否认发热", "不发热"):
+        r = _annotate(f"阴虚内热，{phrase}。", "没有发热。")
+        assert r.pattern_assessments[0].contradictions == [], phrase
+
+
+def test_an_affirmative_claim_next_to_a_negation_is_still_contradicted():
+    r = _annotate("无发热怕冷，但午后发热。", "没有发热。")
+    assert r.pattern_assessments[0].contradictions
+    assert r.ready_for_formula_retrieval is False

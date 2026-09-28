@@ -32,8 +32,12 @@ class ContradictionEngine:
             model_text=" ".join(x.text for x in assessment.supporting_evidence)
             for term in CLINICAL_TERMS:
                 evidence=model_text
-                for compound in sorted(COMPOUND_FORMS.get(term,()),key=len,reverse=True):
-                    evidence=evidence.replace(compound," ")
+                # Only an affirmative mention by the model can be contradicted. Observed on
+                # Staging: the model's own evidence read "无发热怕冷" (no fever or chills);
+                # the patient's "没有发热" agrees with it and must not veto the pattern.
+                removable=(*COMPOUND_FORMS.get(term,()),*NEGATED_FORMS.get(term,()))
+                for phrase in sorted(removable,key=len,reverse=True):
+                    evidence=evidence.replace(phrase," ")
                 if term not in evidence:
                     continue
                 if any(form in text for form in NEGATED_FORMS.get(term,())):
