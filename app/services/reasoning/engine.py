@@ -45,7 +45,9 @@ class DiagnosticReasoningEngine:
         for p in model_patterns or []:
             name=str(p.get("name","")).strip()
             if not name: continue
-            matches=self.resolver.search(name,["pattern"],reviewed_only=True,limit=3)
+            # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P6: bounded name match, so "风寒束表，肺气失宣"
+            # finds the reviewed "风寒束表" and a fragment such as "风寒" finds nothing.
+            matches=self.resolver.match_pattern(name,limit=3)
             support=[]
             reasoning=str(p.get("reasoning","")).strip()
             if reasoning: support.append(EvidenceItem(text=reasoning,source="model_reasoning"))

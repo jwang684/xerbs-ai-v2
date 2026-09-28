@@ -80,7 +80,9 @@ class TestBehaviourPreserved:
 
         code = ast.unparse(ast.parse(textwrap.dedent(
             inspect.getsource(DiagnosticReasoningEngine.analyze))))
-        assert "self.resolver.search(" in code
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P6: the pattern lookup is the
+        # resolver's bounded match, still through the seam.
+        assert "self.resolver.match_pattern(" in code
         assert "self.corpus.search(" not in code
 
     def test_the_engine_still_accepts_a_bare_corpus(self):

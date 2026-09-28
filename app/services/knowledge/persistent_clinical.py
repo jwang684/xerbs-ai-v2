@@ -4,6 +4,7 @@ from sqlalchemy import or_, select, func
 from sqlalchemy.exc import IntegrityError
 from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship, SourceReviewEvent, GovernedObjectSource
 from app.db.session import get_session_factory
+from app.services.knowledge.pattern_match import matches_reviewed_name, name_components
 from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict, SourceRecord, SourceEntityRef, SourceAlreadyExistsDetail, SourceReviewDecision, SourceReviewEventRecord, SourceAuditEventRecord
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
 
@@ -373,6 +374,22 @@ class PersistentClinicalStore:
                 snap=self._latest_snapshot(s,e.id)
                 fields=[snap.get('name',''),*snap.get('aliases',[]),*snap.get('indications',[]),*snap.get('ingredients',[])]
                 if any(q in str(v).lower() for v in fields): out.append(self._serialize(s,e,snap))
+                if len(out)>=limit: break
+        return out
+
+    def match_reviewed_patterns(self, model_name, limit=3):
+        """X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P6: REVIEWED patterns a model pattern name names.
+
+        Only the reviewed record's own name and aliases are compared, by bounded
+        component equality (see pattern_match). Indications and ingredients are
+        symptoms and herbs, not pattern names, and are deliberately not consulted.
+        """
+        if not name_components(model_name): return []
+        out=[]
+        with self.Session() as s:
+            for e in s.scalars(select(ClinicalEntity).where(ClinicalEntity.entity_type=="pattern",ClinicalEntity.review_status=="REVIEWED").order_by(ClinicalEntity.id)).all():
+                snap=self._latest_snapshot(s,e.id)
+                if matches_reviewed_name(model_name,[snap.get('name',''),*snap.get('aliases',[])]): out.append(self._serialize(s,e,snap))
                 if len(out)>=limit: break
         return out
 

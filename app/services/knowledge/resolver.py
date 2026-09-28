@@ -127,3 +127,20 @@ class KnowledgeResolver:
         return self.resolve_entity(
             subject, entity_types, reviewed_only=reviewed_only,
             limit=limit).matches
+
+    def match_pattern(self, model_name: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P6: the reasoning engine's pattern lookup.
+
+        Delegates to the store's bounded pattern-name match (reviewed patterns
+        only, see pattern_match) and records a miss exactly as resolve_entity
+        does. The store's result is returned unchanged.
+        """
+        matches = self.store.match_reviewed_patterns(model_name, limit=limit)
+        if not matches and self.record_gaps:
+            record_gap(
+                claim_type=CLAIM_PATTERN_ENTITY,
+                subject=model_name,
+                entity_types=["pattern"],
+                reviewed_only=True,
+            )
+        return matches
