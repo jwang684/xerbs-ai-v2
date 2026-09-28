@@ -57,7 +57,11 @@ class SafetyEngine:
             if not a or not b: raise ValueError('Both relationship entities must exist')
             expected=('pattern','formula') if req.relationship_type=='PATTERN_FORMULA' else ('formula','herb')
             if (a.entity_type,b.entity_type)!=expected: raise ValueError('Relationship entity types do not match relationship_type')
-            if a.review_status!='REVIEWED' or b.review_status!='REVIEWED': raise ValueError('Relationships require REVIEWED entities')
+            # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: a source-verified endpoint may
+            # carry a link too. The link itself still starts DRAFT and needs its
+            # own human decision; nothing here confers eligibility.
+            linkable=('REVIEWED','SOURCE_VERIFIED')
+            if a.review_status not in linkable or b.review_status not in linkable: raise ValueError('Relationships require REVIEWED or SOURCE_VERIFIED entities')
             if req.source_id and not s.get(SourceRegistry,req.source_id): raise ValueError('Source not found')
 
             # Semantic identity and content hash need both endpoints to carry

@@ -9,6 +9,9 @@ class ReviewStatus(str, Enum):
     DRAFT = "DRAFT"
     IN_REVIEW = "IN_REVIEW"
     REVIEWED = "REVIEWED"
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: faithful to its cited source, as
+    # verified by a human; NOT a clinical review. See governance.lifecycle.
+    SOURCE_VERIFIED = "SOURCE_VERIFIED"
     REJECTED = "REJECTED"
     RETIRED = "RETIRED"
 

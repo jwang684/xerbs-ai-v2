@@ -200,11 +200,15 @@ class TestNoAuthorityEscalation:
         code = self._executable(DiagnosticReasoningEngine.analyze)
         assert "corpus_match=bool(matches)" in code
         # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P6: the lookup is now the bounded
-        # pattern match; it still reads REVIEWED patterns only.
+        # pattern match. P7: REVIEWED only, unless the Staging-only
+        # source-bounded gate admits SOURCE_VERIFIED as well.
         assert "self.resolver.match_pattern(" in code
         from app.services.knowledge.persistent_clinical import PersistentClinicalStore
         store_code = self._executable(PersistentClinicalStore.match_reviewed_patterns)
-        assert "ClinicalEntity.review_status == 'REVIEWED'" in store_code
+        assert ("statuses = ['REVIEWED', 'SOURCE_VERIFIED'] if source_bounded "
+                "else ['REVIEWED']") in store_code
+        assert "source_bounded = self._source_bounded_enabled()" in store_code
+        assert "ClinicalEntity.review_status.in_(statuses)" in store_code
         assert "clinical_reasoning" not in code   # the engine never reads it
 
     def test_the_envelope_reaches_no_safety_input(self):

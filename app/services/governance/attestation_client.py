@@ -57,6 +57,11 @@ class AttestationNotFound(AttestationLookupError):
 class CoreAttestationClient:
     """Read-only client for core's internal governance lookup."""
 
+    #: Overridden by the source-verification lane, which reads a different core
+    #: record through a different path -- never this one.
+    LOOKUP_PATH = LOOKUP_PATH
+    REQUIRED_FIELDS = REQUIRED_FIELDS
+
     def __init__(self, base_url: str | None = None, token: str | None = None,
                  timeout: float | None = None):
         s = get_settings()
@@ -80,7 +85,7 @@ class CoreAttestationClient:
                 "record a human approval that cannot be verified",
                 code="ATTESTATION_VERIFICATION_UNAVAILABLE")
 
-        url = self._base_url.rstrip("/") + (LOOKUP_PATH % attestation_id)
+        url = self._base_url.rstrip("/") + (self.LOOKUP_PATH % attestation_id)
         headers = {"Authorization": "Bearer %s" % self._token,
                    "Accept": "application/json"}
         if correlation_id:
@@ -120,7 +125,7 @@ class CoreAttestationClient:
                 % type(payload).__name__,
                 code="ATTESTATION_RESPONSE_MALFORMED")
 
-        missing = [f for f in REQUIRED_FIELDS if f not in payload]
+        missing = [f for f in self.REQUIRED_FIELDS if f not in payload]
         if missing:
             raise AttestationLookupError(
                 "xerbs-core attestation response is missing %s" % ", ".join(missing),
@@ -132,3 +137,26 @@ class CoreAttestationClient:
                 code="ATTESTATION_RESPONSE_MALFORMED")
 
         return payload
+
+
+# ----------------------------------------------------------------------
+# X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: the source-verification lane
+# ----------------------------------------------------------------------
+#: A SOURCE-VERIFICATION record in core is a different table behind a different
+#: path. It can never be returned by the clinical lookup above, and the
+#: clinical path can never be satisfied by it (its decision is never APPROVED).
+SOURCE_VERIFICATION_LOOKUP_PATH = "/internal/governance/source-verifications/%s"
+
+SOURCE_VERIFICATION_REQUIRED_FIELDS = (
+    "attestation_id", "verification_kind", "decision", "statement",
+    "statement_version", "target_system", "target_environment",
+    "governance_object_type", "semantic_object_id", "object_version",
+    "content_hash", "verifier_subject", "is_active", "is_revoked",
+)
+
+
+class CoreSourceVerificationClient(CoreAttestationClient):
+    """Read-only lookup of a human SOURCE-VERIFICATION record in core."""
+
+    LOOKUP_PATH = SOURCE_VERIFICATION_LOOKUP_PATH
+    REQUIRED_FIELDS = SOURCE_VERIFICATION_REQUIRED_FIELDS

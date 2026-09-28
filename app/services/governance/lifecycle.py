@@ -34,9 +34,17 @@ REVIEWED = "REVIEWED"
 REJECTED = "REJECTED"
 RETIRED = "RETIRED"
 
+#: X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: a human verified that the object
+#: faithfully represents its cited authoritative source. Deliberately NOT
+#: REVIEWED: every existing "REVIEWED" check -- clinical ranking, reviewed-only
+#: search, safety screening -- keeps excluding it, and only the explicit
+#: source-bounded path below ever reads it. It is not a clinical approval.
+SOURCE_VERIFIED = "SOURCE_VERIFIED"
+
 #: Every state a governed relationship or safety rule may hold. Mirrors the
 #: vocabulary clinical entities already use, minus states they do not need.
-GOVERNED_STATES = frozenset({DRAFT, IN_REVIEW, REVIEWED, REJECTED, RETIRED})
+GOVERNED_STATES = frozenset({DRAFT, IN_REVIEW, REVIEWED, SOURCE_VERIFIED,
+                             REJECTED, RETIRED})
 
 #: The state anything newly created starts in. Never REVIEWED.
 INITIAL_STATE = DRAFT
@@ -51,6 +59,7 @@ LOCAL_TRANSITIONS: dict[tuple[str, str], str] = {
     (IN_REVIEW, "REQUEST_CHANGES"): DRAFT,
     (IN_REVIEW, "REJECT"): REJECTED,
     (REVIEWED, "RETIRE"): RETIRED,
+    (SOURCE_VERIFIED, "RETIRE"): RETIRED,
     (DRAFT, "RETIRE"): RETIRED,
     (REJECTED, "RETIRE"): RETIRED,
 }
@@ -123,9 +132,15 @@ UNREVIEWED = "UNREVIEWED"
 #: facts, and the second one is the one a later reviewer needs to know.
 ATTESTATION_REVOKED = "ATTESTATION_REVOKED"
 
+#: X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: moved to SOURCE_VERIFIED against a
+#: verified xerbs-core SOURCE-VERIFICATION attestation. Distinct from ATTESTED,
+#: which only a clinical review attestation sets.
+SOURCE_VERIFIED_PROVENANCE = "SOURCE_VERIFIED"
+
 GOVERNANCE_PROVENANCE = frozenset({
     ATTESTED, LEGACY_SELF_REVIEWED, LEGACY_INDEPENDENTLY_REVIEWED,
-    LEGACY_UNREVIEWED, UNREVIEWED, ATTESTATION_REVOKED})
+    LEGACY_UNREVIEWED, UNREVIEWED, ATTESTATION_REVOKED,
+    SOURCE_VERIFIED_PROVENANCE})
 
 #: Provenance values that predate GOV2 and therefore carry no verified human
 #: decision. Kept as a set rather than a string test so the ranking predicate
@@ -191,6 +206,21 @@ def is_governed_object_ranking_eligible(
     if not has_verified_attested_approval:
         return False
     return reviewed_evidence_source_count > 0
+
+
+# ----------------------------------------------------------------------
+# Source-bounded retrieval (X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7)
+# ----------------------------------------------------------------------
+#: Environments in which SOURCE_VERIFIED objects may be retrieved at all.
+#:
+#: A code constant, not a setting: turning source-verified content on for
+#: Production is a separate owner decision and must arrive as a reviewed code
+#: change, never as an environment variable someone flips.
+SOURCE_BOUNDED_RETRIEVAL_ENVIRONMENTS = frozenset({"staging"})
+
+
+def source_bounded_retrieval_enabled(environment: str | None) -> bool:
+    return (environment or "").strip().lower() in SOURCE_BOUNDED_RETRIEVAL_ENVIRONMENTS
 
 
 def relationship_content_hash(source_external_id: str, relationship_type: str,

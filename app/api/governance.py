@@ -57,6 +57,13 @@ _STATUS = {
     "ATTESTATION_STILL_ACTIVE": 409,
     "RE_APPROVAL_AFTER_REVOCATION_UNSUPPORTED": 409,
     "SUBJECT_MISMATCH": 422,
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: source-verification lane.
+    "NOT_A_SOURCE_VERIFICATION": 422,
+    "DECISION_NOT_VERIFIED": 422,
+    "STATEMENT_MISMATCH": 422,
+    "VERIFIER_SUBJECT_INVALID": 422,
+    "SEPARATION_OF_DUTIES": 403,
+    "ALREADY_VERIFIED_BY_DIFFERENT_RECORD": 409,
 }
 
 
@@ -212,6 +219,48 @@ def revoke_attested_review(
             attestation_id=request.attestation_id,
             correlation_id=correlation_id,
             idempotency_key=idempotency_key)
+    except AttestedReviewError as exc:
+        raise HTTPException(_STATUS.get(exc.code, 422),
+                            detail={"code": exc.code, "message": exc.message}) from exc
+
+
+# ----------------------------------------------------------------------
+# X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: human SOURCE VERIFICATION
+# ----------------------------------------------------------------------
+from app.services.governance.source_verification import (  # noqa: E402
+    VERIFIABLE_OBJECT_TYPES, source_verification_service)
+
+
+class SourceVerificationRequest(BaseModel):
+    """A reference to a human decision in core. Never a claim of one."""
+
+    verification_id: str = Field(min_length=1, max_length=64)
+    expected_version: int | None = None
+
+
+@router.post("/{object_type}/{object_id}/source-verification")
+def source_verification(
+    object_type: str,
+    object_id: str,
+    request: SourceVerificationRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    correlation_id: str | None = Header(default=None, alias="X-Correlation-ID"),
+):
+    """IN_REVIEW -> SOURCE_VERIFIED, against a verified core record.
+
+    Source verification only: the object is confirmed to represent its cited
+    source. It is never REVIEWED by this route and gains no clinical-review
+    eligibility of any kind.
+    """
+    if object_type not in VERIFIABLE_OBJECT_TYPES:
+        raise HTTPException(422, detail="object_type %r cannot be source-verified"
+                            % object_type)
+    try:
+        return source_verification_service.verify(
+            object_type=object_type, object_id=object_id,
+            verification_id=request.verification_id,
+            expected_version=request.expected_version,
+            correlation_id=correlation_id, idempotency_key=idempotency_key)
     except AttestedReviewError as exc:
         raise HTTPException(_STATUS.get(exc.code, 422),
                             detail={"code": exc.code, "message": exc.message}) from exc

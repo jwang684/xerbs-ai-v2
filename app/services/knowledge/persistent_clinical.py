@@ -385,13 +385,106 @@ class PersistentClinicalStore:
         symptoms and herbs, not pattern names, and are deliberately not consulted.
         """
         if not name_components(model_name): return []
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: SOURCE_VERIFIED patterns join only
+        # where source-bounded retrieval is explicitly enabled, and only with a
+        # live verification at their current version plus a verified source.
+        source_bounded=self._source_bounded_enabled()
+        statuses=["REVIEWED","SOURCE_VERIFIED"] if source_bounded else ["REVIEWED"]
         out=[]
         with self.Session() as s:
-            for e in s.scalars(select(ClinicalEntity).where(ClinicalEntity.entity_type=="pattern",ClinicalEntity.review_status=="REVIEWED").order_by(ClinicalEntity.id)).all():
+            for e in s.scalars(select(ClinicalEntity).where(ClinicalEntity.entity_type=="pattern",ClinicalEntity.review_status.in_(statuses)).order_by(ClinicalEntity.id)).all():
+                basis="CLINICAL_REVIEW"
+                if e.review_status=="SOURCE_VERIFIED":
+                    if not self._source_verified_entity_sources(s,e): continue
+                    basis="SOURCE_VERIFIED"
                 snap=self._latest_snapshot(s,e.id)
-                if matches_reviewed_name(model_name,[snap.get('name',''),*snap.get('aliases',[])]): out.append(self._serialize(s,e,snap))
+                if matches_reviewed_name(model_name,[snap.get('name',''),*snap.get('aliases',[])]):
+                    d=self._serialize(s,e,snap); d['governance_basis']=basis; out.append(d)
                 if len(out)>=limit: break
         return out
+
+    # ------------------------------------------------------------------
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: source-bounded eligibility
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _source_bounded_enabled():
+        from app.core.config import get_settings
+        from app.services.governance import lifecycle
+        return lifecycle.source_bounded_retrieval_enabled(get_settings().environment)
+
+    @staticmethod
+    def _verified_source_ids(s, source_ids):
+        """Of these sources, the ones a human source-verified at their current version."""
+        from app.services.governance.source_verification import has_verified_source_verification
+        out=set()
+        for sid in source_ids:
+            src=s.get(SourceRegistry,sid)
+            if src is not None and src.review_status=="SOURCE_VERIFIED" and has_verified_source_verification(s,"SOURCE",sid,src.version):
+                out.add(sid)
+        return out
+
+    def _source_verified_entity_sources(self, s, e):
+        """Verified sources behind a SOURCE_VERIFIED entity, or empty if it is not eligible."""
+        from app.services.governance.source_verification import has_verified_source_verification
+        if e.review_status!="SOURCE_VERIFIED" or e.retired_at is not None: return set()
+        if not has_verified_source_verification(s,"CLINICAL_ENTITY",e.id,e.current_version): return set()
+        attached=[x.source_id for x in s.scalars(select(EntitySource).where(EntitySource.entity_id==e.id)).all()]
+        return self._verified_source_ids(s,attached)
+
+    def _source_bounded_endpoint_sources(self, s, e):
+        """Sources that may carry a source-bounded link through this endpoint."""
+        if e.review_status=="REVIEWED" and self._is_ranking_eligible(s,e.id,e.review_status):
+            return {x.source_id for x in s.scalars(select(EntitySource).where(EntitySource.entity_id==e.id)).all()}
+        return self._source_verified_entity_sources(s,e)
+
+    def _source_bounded_formula_candidates(self, s, pattern_ids):
+        """PATTERN_FORMULA links a human verified against one authoritative source.
+
+        All of these must hold: the relationship is SOURCE_VERIFIED with a live
+        verification at its current version; its own evidence names a
+        source-verified source; and that SAME source is attached to both the
+        pattern and the formula -- the source states the link, it is not
+        assembled from two unrelated documents.
+        """
+        from app.services.governance.source_verification import has_verified_source_verification
+        out={}
+        rels=s.scalars(select(ClinicalRelationship).where(
+            ClinicalRelationship.source_entity_id.in_(pattern_ids),
+            ClinicalRelationship.relationship_type=="PATTERN_FORMULA",
+            ClinicalRelationship.review_status=="SOURCE_VERIFIED")).all()
+        for rel in rels:
+            if not has_verified_source_verification(s,"CLINICAL_RELATIONSHIP",rel.id,rel.version): continue
+            pattern=s.get(ClinicalEntity,rel.source_entity_id); formula=s.get(ClinicalEntity,rel.target_entity_id)
+            if pattern is None or formula is None or formula.entity_type!="formula": continue
+            evidence=[g.source_id for g in s.scalars(select(GovernedObjectSource).where(
+                GovernedObjectSource.object_type=="CLINICAL_RELATIONSHIP",
+                GovernedObjectSource.object_id==rel.id)).all()]
+            shared=(self._verified_source_ids(s,evidence)
+                    & self._source_bounded_endpoint_sources(s,pattern)
+                    & self._source_bounded_endpoint_sources(s,formula))
+            if not shared: continue
+            item=out.setdefault(formula.id,{"count":0,"patterns":[],"sources":set(),"formula":formula,"snapshot":self._latest_snapshot(s,formula.id)})
+            item["count"]+=1; item["patterns"].append(rel.source_entity_id); item["sources"]|=shared
+        result=[]
+        for eid,meta in sorted(out.items(),key=lambda kv:(-kv[1]["count"],kv[0])):
+            snap=meta["snapshot"]; sources=sorted(meta["sources"])
+            result.append({
+                "formula_id":eid,
+                "name":snap.get("name",""),
+                "confidence":min(.92,.60+.08*meta["count"]),
+                "rationale":"Source-verified pattern→formula relationship stated by %s (%d pattern link(s)); source verification, not independent clinical review" % (", ".join(sources),meta["count"]),
+                "ingredients":snap.get("ingredients",[]),
+                "safety_flags":list(dict.fromkeys([*snap.get("contraindications",[]),*snap.get("interaction_flags",[]),"PRACTITIONER_REVIEW_REQUIRED","SOURCE_VERIFIED_NOT_CLINICALLY_REVIEWED"])),
+                "governance":{
+                    "basis":"SOURCE_VERIFIED",
+                    "clinical_review":"NOT_PERFORMED",
+                    "source_ids":sources,
+                    "formula_external_id":meta["formula"].external_id,
+                    "formula_review_status":meta["formula"].review_status,
+                    "composition":snap.get("composition"),
+                },
+            })
+        return result
 
 
     def eligible_formula_candidates_for_patterns(self, pattern_ids: list[str]):
@@ -434,6 +527,13 @@ class PersistentClinicalStore:
                 "ingredients":snap.get("ingredients",[]),
                 "safety_flags":list(dict.fromkeys([*snap.get("contraindications",[]),*snap.get("interaction_flags",[]),"PRACTITIONER_REVIEW_REQUIRED"])),
             })
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: clinically reviewed links first;
+        # source-verified links only where source-bounded retrieval is enabled.
+        if len(out)<3 and self._source_bounded_enabled():
+            seen={c["formula_id"] for c in out}
+            with self.Session() as s:
+                extra=[c for c in self._source_bounded_formula_candidates(s,pattern_ids) if c["formula_id"] not in seen]
+            out.extend(extra[:3-len(out)])
         return out
 
     def eligible_formula_candidates(self, symptoms, text_input=""):

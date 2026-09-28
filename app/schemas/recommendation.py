@@ -19,6 +19,11 @@ class FormulaCandidate(BaseModel):
     safety_flags: list[str] = Field(default_factory=list)
     catalog_matches: list[dict] = Field(default_factory=list)
     safety_assessment: SafetyAssessment | None = None
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: how the corpus stands behind this
+    # candidate, e.g. {"basis": "SOURCE_VERIFIED", "clinical_review":
+    # "NOT_PERFORMED", "source_ids": [...]}. Absent for clinically reviewed
+    # links, whose provenance is unchanged.
+    governance: dict | None = None
 
 
 class ModelProvenance(BaseModel):

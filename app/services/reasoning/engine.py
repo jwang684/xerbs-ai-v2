@@ -41,13 +41,14 @@ class DiagnosticReasoningEngine:
             if not any(x in joined for x in markers[field]):
                 missing.append(MissingInformation(field=field,reason=reason,question=q,priority="HIGH" if field in {"duration","temperature"} else "MEDIUM")); questions.append(q)
 
-        assessments=[]
+        assessments=[]; source_verified_match=False
         for p in model_patterns or []:
             name=str(p.get("name","")).strip()
             if not name: continue
             # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P6: bounded name match, so "风寒束表，肺气失宣"
             # finds the reviewed "风寒束表" and a fragment such as "风寒" finds nothing.
             matches=self.resolver.match_pattern(name,limit=3)
+            if matches and matches[0].get("governance_basis")=="SOURCE_VERIFIED": source_verified_match=True
             support=[]
             reasoning=str(p.get("reasoning","")).strip()
             if reasoning: support.append(EvidenceItem(text=reasoning,source="model_reasoning"))
@@ -56,6 +57,8 @@ class DiagnosticReasoningEngine:
         if missing: flags.append("MISSING_CLINICAL_INFORMATION")
         if assessments and not any(x.corpus_match for x in assessments): flags.append("PATTERN_NOT_VERIFIED_IN_REVIEWED_CORPUS")
         if not assessments: flags.append("NO_PATTERN_HYPOTHESIS")
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: said out loud, never implied.
+        if source_verified_match: flags.append("PATTERN_SOURCE_VERIFIED_NOT_CLINICALLY_REVIEWED")
         ready=bool(assessments) and any(x.corpus_match for x in assessments) and not any(x.priority=="HIGH" for x in missing)
         response=ReasoningResponse(request_id=request.request_id,structured_symptoms=symptoms,missing_information=missing,followup_questions=questions,pattern_assessments=assessments,uncertainty_flags=flags,ready_for_formula_retrieval=ready)
         return self.contradictions.annotate(response, joined)

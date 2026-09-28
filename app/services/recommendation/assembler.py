@@ -630,13 +630,27 @@ class RecommendationAssembler:
         if relationship_matches:
             candidates = relationship_matches
 
-            uncertainty_flags.extend(
-                [
-                    "REVIEWED_PATTERN_FORMULA_RELATIONSHIP_RETRIEVAL",
-                    "REVIEWED_CLINICAL_CORPUS",
-                    "AI_FORMULA_RANKING_NOT_USED",
-                ]
-            )
+            # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: a source-verified link is
+            # labelled as exactly that, never as reviewed clinical corpus.
+            source_verified = any(
+                (c.get("governance") or {}).get("basis") == "SOURCE_VERIFIED"
+                for c in relationship_matches)
+            if source_verified:
+                uncertainty_flags.extend(
+                    [
+                        "SOURCE_VERIFIED_PATTERN_FORMULA_RELATIONSHIP_RETRIEVAL",
+                        "SOURCE_VERIFIED_NOT_INDEPENDENT_CLINICAL_APPROVAL",
+                        "AI_FORMULA_RANKING_NOT_USED",
+                    ]
+                )
+            else:
+                uncertainty_flags.extend(
+                    [
+                        "REVIEWED_PATTERN_FORMULA_RELATIONSHIP_RETRIEVAL",
+                        "REVIEWED_CLINICAL_CORPUS",
+                        "AI_FORMULA_RANKING_NOT_USED",
+                    ]
+                )
 
         elif reviewed_matches:
             candidates = reviewed_matches
