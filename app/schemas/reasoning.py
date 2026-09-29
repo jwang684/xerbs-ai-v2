@@ -33,6 +33,10 @@ class MissingInformation(BaseModel):
     # no provenance to record. The field was known here all along -- it just
     # never travelled.
     question: str | None = None
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P10: UNANSWERED (may be asked) or
+    # ANSWERED_UNKNOWN (the patient said 不清楚 -- still clinically unknown, but
+    # already asked and answered, so never re-emitted as a follow-up question).
+    answer_status: str | None = None
 
 class ConvergenceMetrics(BaseModel):
     score: float = Field(ge=0, le=1)
