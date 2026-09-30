@@ -177,8 +177,36 @@ def family_metrics(turns, results):
     return {f: metrics(rs) for f, rs in sorted(groups.items())}
 
 
-def run(snap, turns, matcher=H.PRODUCTION):
-    return [H.classify_turn(snap, t, matcher) for t in turns]
+def run(snap, turns, matcher=H.PRODUCTION, policy=H.PRIMARY_ANCHORED):
+    return [H.classify_turn(snap, t, matcher, policy) for t in turns]
+
+
+def retrieval_policy_comparison(snap, turns):
+    """X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: the pooled rule it replaced vs the current one.
+
+    "flagged" = turns the historical pooled rule sent down a governed path
+    although their top-ranked hypothesis matched nothing (P14: 18 of 71);
+    "legitimate" = turns whose top-ranked hypothesis itself reached one (22).
+    """
+    hist = run(snap, turns, policy=H.POOLED_ALL_HYPOTHESES_HISTORICAL)
+    cur = run(snap, turns)
+    flagged = [i for i, r in enumerate(hist) if r.governed and not r.primary_match]
+    legit = [i for i, r in enumerate(hist) if r.governed and r.primary_match]
+    n = len(turns)
+    return {
+        "current_policy": H.PRIMARY_ANCHORED,
+        "historical_policy": H.POOLED_ALL_HYPOTHESES_HISTORICAL,
+        "governed": {"current": _ratio(sum(r.governed for r in cur), n),
+                     "historical": _ratio(sum(r.governed for r in hist), n)},
+        "core": {"current": _ratio(sum(r.outcome == H.FULL_PATH for r in cur), n),
+                 "historical": _ratio(sum(r.outcome == H.FULL_PATH for r in hist), n)},
+        "flagged_secondary_derived": len(flagged),
+        "flagged_still_governed_now": sum(1 for i in flagged if cur[i].governed),
+        "legitimate_primary_governed": len(legit),
+        "legitimate_preserved_now": sum(1 for i in legit if cur[i].governed),
+        "secondary_governed_match_not_used_now": sum(1 for r in cur if r.detail == "SECONDARY_GOVERNED_MATCH_NOT_USED"),
+        "primary_not_selected_now": sum(1 for r in cur if r.outcome == H.PRIMARY_NOT_SELECTED),
+    }
 
 
 # ----------------------------------------------------------------------
@@ -278,7 +306,11 @@ def build_report(base, trace_turns, *, source_text=None, redacted_names=0, alias
     m4 = H.Matcher(name="neutral_normalization", neutral_normalization=True)
 
     strategies = {
-        "S0_CURRENT": {"corpus": base.label, "matcher": "production", "metrics": m0},
+        "S0_CURRENT": {"corpus": base.label, "matcher": "production", "policy": H.PRIMARY_ANCHORED,
+                       "metrics": m0},
+        "S0_HISTORICAL_POOLED": {"corpus": base.label, "matcher": "production",
+                                 "policy": H.POOLED_ALL_HYPOTHESES_HISTORICAL,
+                                 "metrics": metrics(run(base, trace_turns, policy=H.POOLED_ALL_HYPOTHESES_HISTORICAL))},
         "S1_CANONICAL_EXPANSION": {"corpus": s1.label, "matcher": "production", "metrics": m1},
         "S1_WITH_HYPOTHETICAL_CORE_ROWS": {"corpus": s1_core.label, "matcher": "production",
                                            "metrics": metrics(r1c)},
@@ -366,6 +398,7 @@ def build_report(base, trace_turns, *, source_text=None, redacted_names=0, alias
         "safety": {"S0": safety_signals(base, r0), "S1": safety_signals(s1, r1),
                    "S1_PLUS_SEVERE": safety_signals(s1_sev, r1s)},
         "recorded_cross_check_S0": recorded_cross_check(trace_turns, r0, governed_ids),
+        "retrieval_policy_comparison": retrieval_policy_comparison(base, trace_turns),
         "top_unmatched_after_S1": top_unmatched,
         "curated_static": curated,
         "simulated_objects": {"S1": s1.simulated_object_count, "S1_PLUS_SEVERE": s1_sev.simulated_object_count},

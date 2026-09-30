@@ -3,6 +3,9 @@ from app.schemas.reasoning import StructuredSymptom, MissingInformation, Pattern
 from app.services.knowledge.persistent_clinical import PersistentClinicalStore
 from app.services.knowledge.resolver import KnowledgeResolver
 from app.services.reasoning.contradictions import ContradictionEngine
+from app.services.reasoning.primary import (
+    AMBIGUOUS_PRIMARY_HYPOTHESIS, INVALID_PRIMARY_HYPOTHESIS, PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS,
+    SECONDARY_GOVERNED_MATCH_NOT_USED, primary_governed_assessment, select_primary, valid_confidence)
 
 CORE_FIELDS = [
     ("duration", "病程/起病时间尚不明确", "症状持续多久？何时开始？"),
@@ -98,7 +101,11 @@ class DiagnosticReasoningEngine:
             missing.append(MissingInformation(field=field,reason=reason,question=q,priority=priority,answer_status=UNANSWERED)); questions.append(q)
 
         assessments=[]; source_verified_match=False
-        for p in model_patterns or []:
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: every hypothesis is still matched,
+        # kept and reported; only the unambiguous primary may drive retrieval.
+        selection=select_primary(model_patterns)
+        for index,p in enumerate(model_patterns or []):
+            if not isinstance(p,dict): continue
             name=str(p.get("name","")).strip()
             if not name: continue
             # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P6: bounded name match, so "风寒束表，肺气失宣"
@@ -108,7 +115,11 @@ class DiagnosticReasoningEngine:
             support=[]
             reasoning=str(p.get("reasoning","")).strip()
             if reasoning: support.append(EvidenceItem(text=reasoning,source="model_reasoning"))
-            assessments.append(PatternAssessment(pattern_id=(matches[0].get("pattern_id") if matches else None),name=name,model_confidence=float(p.get("confidence",0)),supporting_evidence=support,contradictions=[],corpus_match=bool(matches)))
+            assessments.append(PatternAssessment(pattern_id=(matches[0].get("pattern_id") if matches else None),name=name,model_confidence=valid_confidence(p.get("confidence")) or 0.0,supporting_evidence=support,contradictions=[],corpus_match=bool(matches),
+                                                 hypothesis_rank=index+1,is_primary=selection.selected and index==selection.index,
+                                                 match_mechanism=(matches[0].get("match_mechanism") if matches else None),
+                                                 governed_pattern_name=(matches[0].get("name") if matches else None)))
+        primary=primary_governed_assessment(assessments)
         flags=[]
         if missing: flags.append("MISSING_CLINICAL_INFORMATION")
         if assessments and not any(x.corpus_match for x in assessments): flags.append("PATTERN_NOT_VERIFIED_IN_REVIEWED_CORPUS")
@@ -116,6 +127,11 @@ class DiagnosticReasoningEngine:
         if answered_unknown: flags.append("BASIC_FIELD_ANSWERED_UNKNOWN")
         # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: said out loud, never implied.
         if source_verified_match: flags.append("PATTERN_SOURCE_VERIFIED_NOT_CLINICALLY_REVIEWED")
-        ready=bool(assessments) and any(x.corpus_match for x in assessments) and not any(x.priority=="HIGH" for x in missing)
-        response=ReasoningResponse(request_id=request.request_id,structured_symptoms=symptoms,missing_information=missing,followup_questions=questions,pattern_assessments=assessments,uncertainty_flags=flags,ready_for_formula_retrieval=ready)
+        if selection.outcome in (AMBIGUOUS_PRIMARY_HYPOTHESIS, INVALID_PRIMARY_HYPOTHESIS): flags.append(selection.outcome)
+        if selection.selected and primary is None: flags.append(PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS)
+        if any(x.corpus_match and not x.is_primary and (primary is None or x.pattern_id!=primary.pattern_id) for x in assessments):
+            flags.append(SECONDARY_GOVERNED_MATCH_NOT_USED)
+        # A secondary match never turns readiness on; only the selected primary's does.
+        ready=primary is not None and not any(x.priority=="HIGH" for x in missing)
+        response=ReasoningResponse(request_id=request.request_id,structured_symptoms=symptoms,missing_information=missing,followup_questions=questions,pattern_assessments=assessments,uncertainty_flags=flags,ready_for_formula_retrieval=ready,primary_selection=selection.outcome)
         return self.contradictions.annotate(response, joined)

@@ -4,7 +4,7 @@ from sqlalchemy import or_, select, func
 from sqlalchemy.exc import IntegrityError
 from app.db.models import ClinicalEntity, ClinicalEntityVersion, SourceRegistry, EntitySource, IngestionBatch, IngestionItemRow, ReviewEvent, AuditEvent, ClinicalRelationship, SourceReviewEvent, GovernedObjectSource
 from app.db.session import get_session_factory
-from app.services.knowledge.pattern_match import matches_reviewed_name, name_components
+from app.services.knowledge.pattern_match import match_mechanism, matches_reviewed_name, name_components
 from app.schemas.clinical_knowledge import ReviewStatus, CorpusStats, SourceRef, SourceConflictDetail, SourceFieldConflict, SourceRecord, SourceEntityRef, SourceAlreadyExistsDetail, SourceReviewDecision, SourceReviewEventRecord, SourceAuditEventRecord
 from app.schemas.clinical_workflow import ClinicalEntityDetail, ClinicalEntityType, IngestionBatchRequest, IngestionBatchResult, ReviewActionRequest, ReviewDecision, WorkflowEvent
 
@@ -399,7 +399,10 @@ class PersistentClinicalStore:
                     basis="SOURCE_VERIFIED"
                 snap=self._latest_snapshot(s,e.id)
                 if matches_reviewed_name(model_name,[snap.get('name',''),*snap.get('aliases',[])]):
-                    d=self._serialize(s,e,snap); d['governance_basis']=basis; out.append(d)
+                    d=self._serialize(s,e,snap); d['governance_basis']=basis
+                    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: provenance only; matching is unchanged.
+                    d['match_mechanism']=match_mechanism(model_name,snap.get('name',''),snap.get('aliases',[]))
+                    out.append(d)
                 if len(out)>=limit: break
         return out
 

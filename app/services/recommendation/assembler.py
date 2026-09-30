@@ -22,6 +22,8 @@ from app.services.clarification.validator import validate_proposals_detailed
 from app.services.recommendation.consumer_projection import (
     build_consumer_reasoning,
 )
+from app.services.reasoning.primary import (
+    RETRIEVAL_POLICY, derived_from, primary_governed_assessment)
 from app.services.interview.differential import (
     differential_required_domains,
     signals_from_state,
@@ -583,20 +585,23 @@ class RecommendationAssembler:
         # -------------------------------------------------------------
         candidates = []
 
-        verified_pattern_ids = [
-            assessment.pattern_id
-            for assessment in reasoning.pattern_assessments
-            if assessment.corpus_match and assessment.pattern_id
-        ]
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: ONLY the selected primary
+        # hypothesis's governed pattern enters relationship retrieval. A
+        # lower-ranked hypothesis may be a differential rather than a concurrent
+        # pattern -- the contract cannot tell -- so it never fetches a formula.
+        primary = primary_governed_assessment(reasoning.pattern_assessments)
 
         relationship_matches = []
 
-        if reasoning.ready_for_formula_retrieval and verified_pattern_ids:
-            relationship_matches = (
-                self.corpus.eligible_formula_candidates_for_patterns(
-                    verified_pattern_ids
+        if reasoning.ready_for_formula_retrieval and primary is not None:
+            provenance = derived_from(primary)
+            relationship_matches = [
+                {**dict(c), "derived_from": dict(provenance),
+                 "retrieval_policy": RETRIEVAL_POLICY}
+                for c in self.corpus.eligible_formula_candidates_for_patterns(
+                    [primary.pattern_id]
                 )
-            )
+            ]
 
         # Backward-compatible reviewed indication retrieval.
         #

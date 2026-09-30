@@ -81,9 +81,14 @@ def test_fenghan_shubiao_reaches_mahuangtang_jiawei_and_core():
     assert compound.hypothesis_explanations[0][1] == H.COMPOUND_PIECE
 
 
-def test_a_secondary_hypothesis_carries_the_turn_like_the_assembler():
-    r = classify(staging_like(), "痰热壅肺", "风寒束表，肺气失宣")
-    assert not r.primary_match and r.any_match and r.outcome == H.FULL_PATH
+def test_a_secondary_hypothesis_carried_the_turn_only_under_the_historical_pooled_rule():
+    """X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: pooling is now a historical simulation only."""
+    t = H.TurnInput(ordinal=1, hypotheses=(H.Hypothesis("痰热壅肺", 0.6), H.Hypothesis("风寒束表，肺气失宣", 0.3)))
+    old = H.classify_turn(staging_like(), t, policy=H.POOLED_ALL_HYPOTHESES_HISTORICAL)
+    assert not old.primary_match and old.any_match and old.outcome == H.FULL_PATH
+    now = H.classify_turn(staging_like(), t)
+    assert now.any_match and not now.primary_match
+    assert (now.outcome, now.detail) == (H.NO_PATTERN_MATCH, "SECONDARY_GOVERNED_MATCH_NOT_USED")
 
 
 # ----------------------------------------------------------------------

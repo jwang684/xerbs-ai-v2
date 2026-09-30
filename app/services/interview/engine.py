@@ -8,6 +8,7 @@ from app.schemas.intake import RecommendationRequest
 from app.schemas.interview import InterviewState, InterviewQuestion, InterviewAnswerRequest
 from app.schemas.reasoning import ReasoningResponse
 from app.services.reasoning.engine import DiagnosticReasoningEngine
+from app.services.reasoning.primary import primary_governed_assessment
 from app.services.reasoning.convergence import PatternConvergenceEngine
 from app.services.llm.provider import LLMProvider
 
@@ -95,7 +96,8 @@ class AdaptiveInterviewEngine:
                     reasoning.uncertainty_flags.append("MISSING_CLINICAL_INFORMATION")
             else:
                 reasoning.uncertainty_flags=[x for x in reasoning.uncertainty_flags if x!="MISSING_CLINICAL_INFORMATION"]
-            reasoning.ready_for_formula_retrieval=bool(reasoning.pattern_assessments) and any(x.corpus_match for x in reasoning.pattern_assessments) and not any(x.priority=="HIGH" for x in reasoning.missing_information) and not any(x.contradictions for x in reasoning.pattern_assessments)
+            # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: only the selected primary's governed match counts.
+            reasoning.ready_for_formula_retrieval=primary_governed_assessment(reasoning.pattern_assessments) is not None and not any(x.priority=="HIGH" for x in reasoning.missing_information) and not any(x.contradictions for x in reasoning.pattern_assessments)
             convergence=self.convergence.evaluate(reasoning, previous_reasoning)
             reasoning.convergence=convergence
             if convergence.pattern_stability < .5 and previous_reasoning.pattern_assessments:

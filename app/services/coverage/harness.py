@@ -34,7 +34,8 @@ from dataclasses import dataclass, field, replace
 from typing import Iterable, Mapping, Sequence
 
 from app.services.governance import lifecycle
-from app.services.knowledge.pattern_match import _BOUNDARY, _normalize, name_components
+from app.services.knowledge.pattern_match import _BOUNDARY, _normalize, match_mechanism, name_components
+from app.services.reasoning.primary import RETRIEVAL_POLICY, select_primary
 
 REVIEWED = "REVIEWED"
 SOURCE_VERIFIED = lifecycle.SOURCE_VERIFIED
@@ -49,7 +50,7 @@ NO_RELATIONSHIP = "NO_RELATIONSHIP"
 PATTERN_INELIGIBLE = "PATTERN_INELIGIBLE"
 NO_PATTERN_MATCH = "NO_PATTERN_MATCH"
 OUTCOMES = (FULL_PATH, CORE_CANONICAL_MISSING, FORMULA_INELIGIBLE, RELATIONSHIP_INELIGIBLE,
-            NO_RELATIONSHIP, PATTERN_INELIGIBLE, NO_PATTERN_MATCH)
+            NO_RELATIONSHIP, PATTERN_INELIGIBLE, NO_PATTERN_MATCH, "PRIMARY_NOT_SELECTED")
 GOVERNED_OUTCOMES = frozenset({FULL_PATH, CORE_CANONICAL_MISSING})
 
 # How a model name met a governed pattern.
@@ -185,17 +186,12 @@ class Matcher:
 
     def explain(self, model_name: str, e: EntitySnap) -> str:
         """Why this model name names this pattern, or NO_MATCH. Ordered by strength."""
-        whole = str(model_name or "").strip()
-        prod = name_components(model_name)
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: the production part is the shared
+        # pattern_match.match_mechanism, the same one candidate provenance reports.
+        prod_how = match_mechanism(model_name, e.name, e.aliases)
+        if prod_how:
+            return prod_how
         canon = _normalize(e.name)
-        if canon and whole == str(e.name or "").strip():
-            return EXACT_CANONICAL
-        if canon and _normalize(whole) == canon:
-            return NORMALIZED_CANONICAL
-        if canon and canon in prod:
-            return COMPOUND_PIECE
-        if {t for t in (_normalize(a) for a in e.aliases) if t} & prod:
-            return RECORD_ALIAS
         comps = self.components(model_name)
         if self.neutral_normalization and ({canon} | {_normalize(a) for a in e.aliases}) & comps:
             return NEUTRAL_NORMALIZATION
@@ -446,38 +442,63 @@ class TurnResult:
         return self.outcome in GOVERNED_OUTCOMES
 
 
-def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION) -> TurnResult:
+# X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: CURRENT REALITY is primary-anchored.
+PRIMARY_ANCHORED = RETRIEVAL_POLICY
+# The pre-P15 rule (every matched hypothesis pooled), kept ONLY as a historical simulation.
+POOLED_ALL_HYPOTHESES_HISTORICAL = "POOLED_ALL_HYPOTHESES_HISTORICAL"
+PRIMARY_NOT_SELECTED = "PRIMARY_NOT_SELECTED"
+
+
+def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION,
+                  policy: str = PRIMARY_ANCHORED) -> TurnResult:
     """The whole chain, the way the engine and assembler walk it.
 
-    Every hypothesis is matched; each matched hypothesis contributes its FIRST
-    match's pattern id (engine.py); retrieval runs once over all of them
-    (assembler.py); Core tries the candidates in order (formula_resolver_service).
-    Readiness (HIGH missing fields) is a per-conversation fact the harness does
-    not have; it measures corpus reach, not interview completeness.
+    Every hypothesis is matched and explained (diagnostics). Under the
+    production policy only the unambiguous primary (reasoning.primary.
+    select_primary) contributes its first match's pattern id to retrieval; the
+    historical policy pools every matched hypothesis, as ff2fdb1 did. Core
+    tries the candidates in order (formula_resolver_service). Readiness (HIGH
+    missing fields) is a per-conversation fact the harness does not have; it
+    measures corpus reach, not interview completeness.
     """
-    explanations, pattern_ids, first_tiers = [], [], {}
-    primary_match = False
-    for i, h in enumerate(turn.hypotheses):
+    explanations, matched_ids = [], []
+    for h in turn.hypotheses:
         matches = match_patterns(snap, h.name, matcher)
         if matches:
             m = matches[0]
             explanations.append((h.name, m.explanation, m.pattern_name))
-            if m.pattern_id not in pattern_ids:
-                pattern_ids.append(m.pattern_id)
-            primary_match = primary_match or i == 0
+            matched_ids.append(m.pattern_id)
         else:
             explanations.append((h.name, NO_MATCH, None))
-    any_match = bool(pattern_ids)
+            matched_ids.append(None)
+    any_match = any(matched_ids)
+    selection = select_primary([{"name": h.name, "confidence": h.confidence} for h in turn.hypotheses])
+    primary_match = selection.selected and matched_ids[selection.index] is not None
+    if policy == POOLED_ALL_HYPOTHESES_HISTORICAL:
+        primary_match = bool(matched_ids) and matched_ids[0] is not None
+        pattern_ids = list(dict.fromkeys(x for x in matched_ids if x))
+    elif policy == PRIMARY_ANCHORED:
+        pattern_ids = [matched_ids[selection.index]] if primary_match else []
+    else:
+        raise ValueError("unknown retrieval policy %r" % policy)
+    secondary_unused = policy == PRIMARY_ANCHORED and any(
+        x and (not primary_match or x != matched_ids[selection.index])
+        for i, x in enumerate(matched_ids) if i != selection.index)
 
     def result(outcome, detail=None, cands=(), core=None, severe_only=False):
         return TurnResult(turn.ordinal, turn.origin, outcome, detail, primary_match, any_match,
                           tuple(explanations), tuple(pattern_ids), tuple(cands), core, severe_only)
 
-    if not any_match:
-        blocked = [b for h in turn.hypotheses for b in ineligible_name_matches(snap, h.name, matcher)]
+    if policy == PRIMARY_ANCHORED and not selection.selected:
+        return result(PRIMARY_NOT_SELECTED, selection.outcome)
+    if not pattern_ids:
+        pool = (turn.hypotheses if policy == POOLED_ALL_HYPOTHESES_HISTORICAL
+                else [turn.hypotheses[selection.index]])
+        blocked = [b for h in pool for b in ineligible_name_matches(snap, h.name, matcher)]
+        detail = "SECONDARY_GOVERNED_MATCH_NOT_USED" if secondary_unused else None
         if blocked:
             return result(PATTERN_INELIGIBLE, blocked[0]["reason"])
-        return result(NO_PATTERN_MATCH)
+        return result(NO_PATTERN_MATCH, detail)
 
     cands = formula_candidates(snap, pattern_ids)
     if not cands:

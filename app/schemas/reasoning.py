@@ -17,6 +17,12 @@ class PatternAssessment(BaseModel):
     supporting_evidence: list[EvidenceItem] = Field(default_factory=list)
     contradictions: list[EvidenceItem] = Field(default_factory=list)
     corpus_match: bool = False
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: provenance, all defaulted. Only the
+    # assessment with is_primary=True may drive formula retrieval.
+    hypothesis_rank: int | None = None          # 1-based list position
+    is_primary: bool = False
+    match_mechanism: str | None = None
+    governed_pattern_name: str | None = None
 
 class MissingInformation(BaseModel):
     field: str
@@ -74,6 +80,10 @@ class ReasoningResponse(BaseModel):
     pattern_assessments: list[PatternAssessment] = Field(default_factory=list)
     uncertainty_flags: list[str] = Field(default_factory=list)
     ready_for_formula_retrieval: bool = False
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: outcome of primary selection
+    # (PRIMARY_SELECTED / NO_PATTERN_HYPOTHESES / AMBIGUOUS_PRIMARY_HYPOTHESIS /
+    # INVALID_PRIMARY_HYPOTHESIS). None only on responses built elsewhere.
+    primary_selection: str | None = None
     convergence: ConvergenceMetrics | None = None
     # X1D-CLARIFY1: validated adaptive questions. Optional and defaulted, so
     # every existing caller and stored snapshot stays valid.

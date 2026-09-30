@@ -47,3 +47,26 @@ def matches_reviewed_name(model_name: str, reviewed_terms: Iterable[str]) -> boo
     """True when a reviewed name/alias equals the model name or one of its components."""
     terms = {t for t in (_normalize(x) for x in reviewed_terms) if t}
     return bool(terms & name_components(model_name))
+
+
+# X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: HOW a match happened, for candidate
+# provenance. Strongest first; None exactly when matches_reviewed_name is False.
+EXACT_CANONICAL = "EXACT_CANONICAL"
+NORMALIZED_CANONICAL = "NORMALIZED_CANONICAL"
+COMPOUND_PIECE = "COMPOUND_PIECE"
+RECORD_ALIAS = "RECORD_ALIAS"
+
+
+def match_mechanism(model_name: str, name: str, aliases: Iterable[str] = ()) -> str | None:
+    whole = str(model_name or "").strip()
+    canon = _normalize(name)
+    comps = name_components(model_name)
+    if canon and whole == str(name or "").strip():
+        return EXACT_CANONICAL
+    if canon and _normalize(whole) == canon:
+        return NORMALIZED_CANONICAL
+    if canon and canon in comps:
+        return COMPOUND_PIECE
+    if {t for t in (_normalize(a) for a in aliases) if t} & comps:
+        return RECORD_ALIAS
+    return None

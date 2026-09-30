@@ -24,6 +24,12 @@ class FormulaCandidate(BaseModel):
     # "NOT_PERFORMED", "source_ids": [...]}. Absent for clinically reviewed
     # links, whose provenance is unchanged.
     governance: dict | None = None
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: which hypothesis produced a
+    # pattern-derived candidate, stamped server-side from the reasoning result:
+    # {pattern_id, pattern_name, hypothesis_rank, hypothesis_name,
+    #  model_confidence, match_mechanism}. Absent for indication retrieval.
+    derived_from: dict | None = None
+    retrieval_policy: str | None = None
 
 
 class ModelProvenance(BaseModel):
