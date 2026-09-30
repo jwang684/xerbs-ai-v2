@@ -117,7 +117,8 @@ def load_snapshot(ai, core, environment="staging"):
                 verified, "CLINICAL_ENTITY", binding.get("semantic_object_id"), detail["version"]),
             clinical_ranking_eligible=bool(detail.get("clinical_ranking_eligible")),
             retired=detail.get("retired_at") is not None,
-            external_id=binding.get("semantic_object_id"), source_scope=content.get("source_scope")))
+            external_id=binding.get("semantic_object_id"), source_scope=content.get("source_scope"),
+            applicability=content.get("applicability", H.NO_APPLICABILITY)))
 
     rels = {}
     for e in entities:

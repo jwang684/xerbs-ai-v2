@@ -72,13 +72,18 @@ def test_contract_accepts_exactly_the_five_normalized_fields():
     # field -- the previous turn's validated working differential plus the list
     # of evidence this case can substantiate, both supplied by core from
     # governed history. The set stays closed and exhaustively asserted.
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: condition_context is the third --
+    # the patient's explicit answer to core's fixed applicability question
+    # (e.g. {"cough_primary": "YES"}), derived by core from governed history
+    # only after core itself asked. It defaults to absent.
     assert fields=={'request_id','text_input','symptoms','goals','constraints',
                     'image_data','image_filename','language','patient_context',
-                    'interview_depth','interview_state'}
-    # ...and neither invents anything clinical: a bounded integer and an
-    # optional structure that defaults to absent.
+                    'interview_depth','interview_state','condition_context'}
+    # ...and none invents anything clinical: a bounded integer and optional
+    # structures that default to absent.
     assert RecommendationRequest(text_input='x').interview_depth==0
     assert RecommendationRequest(text_input='x').interview_state is None
+    assert RecommendationRequest(text_input='x').condition_context is None
 
 
 def test_h_goals_and_i_constraints_and_symptoms_survive_mapping():

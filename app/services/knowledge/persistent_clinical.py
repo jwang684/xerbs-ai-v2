@@ -440,7 +440,7 @@ class PersistentClinicalStore:
             return {x.source_id for x in s.scalars(select(EntitySource).where(EntitySource.entity_id==e.id)).all()}
         return self._source_verified_entity_sources(s,e)
 
-    def _source_bounded_formula_candidates(self, s, pattern_ids):
+    def _source_bounded_formula_candidates(self, s, pattern_ids, condition_context=None, scope_report=None):
         """PATTERN_FORMULA links a human verified against one authoritative source.
 
         All of these must hold: the relationship is SOURCE_VERIFIED with a live
@@ -466,8 +466,11 @@ class PersistentClinicalStore:
                     & self._source_bounded_endpoint_sources(s,pattern)
                     & self._source_bounded_endpoint_sources(s,formula))
             if not shared: continue
-            item=out.setdefault(formula.id,{"count":0,"patterns":[],"sources":set(),"formula":formula,"snapshot":self._latest_snapshot(s,formula.id)})
-            item["count"]+=1; item["patterns"].append(rel.source_entity_id); item["sources"]|=shared
+            # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: condition scope, before any candidate exists.
+            conditions=self._scope_gate(s,rel,condition_context,scope_report)
+            if conditions is None: continue
+            item=out.setdefault(formula.id,{"count":0,"patterns":[],"sources":set(),"formula":formula,"snapshot":self._latest_snapshot(s,formula.id),"conditions":set()})
+            item["count"]+=1; item["patterns"].append(rel.source_entity_id); item["sources"]|=shared; item["conditions"]|=set(conditions)
         result=[]
         for eid,meta in sorted(out.items(),key=lambda kv:(-kv[1]["count"],kv[0])):
             snap=meta["snapshot"]; sources=sorted(meta["sources"])
@@ -485,12 +488,30 @@ class PersistentClinicalStore:
                     "formula_external_id":meta["formula"].external_id,
                     "formula_review_status":meta["formula"].review_status,
                     "composition":snap.get("composition"),
+                    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: conditions this link was scoped to (satisfied).
+                    "applicability":sorted(meta["conditions"]),
                 },
             })
         return result
 
 
-    def eligible_formula_candidates_for_patterns(self, pattern_ids: list[str]):
+    def _scope_gate(self, s, rel, condition_context, scope_report):
+        """X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: the link's condition scope.
+
+        Returns the satisfied conditions (empty for an unscoped link), or None
+        when the link must not produce a candidate. Scoped outcomes are
+        appended to scope_report so the caller can ask the fixed question.
+        """
+        from app.services.governance import applicability
+        outcome,conditions,missing=applicability.evaluate(
+            [self._latest_snapshot(s,rel.source_entity_id),self._latest_snapshot(s,rel.target_entity_id)],
+            condition_context)
+        if outcome!=applicability.NOT_SCOPED and scope_report is not None:
+            scope_report.append({"relationship_id":rel.id,"outcome":outcome,
+                                 "conditions":list(conditions),"missing_context":list(missing)})
+        return list(conditions) if applicability.eligible(outcome) else None
+
+    def eligible_formula_candidates_for_patterns(self, pattern_ids: list[str], condition_context=None, scope_report=None):
         pattern_ids=[x for x in pattern_ids if x]
         if not pattern_ids: return []
         scored={}
@@ -514,6 +535,8 @@ class PersistentClinicalStore:
                 # at least one REVIEWED Source.
                 if not self._is_ranking_eligible(s,formula.id,formula.review_status):
                     continue
+                if self._scope_gate(s,rel,condition_context,scope_report) is None:
+                    continue
                 snap=self._latest_snapshot(s,formula.id)
                 item=scored.setdefault(formula.id,{"count":0,"patterns":[],"snapshot":snap})
                 item["count"] += 1
@@ -535,7 +558,7 @@ class PersistentClinicalStore:
         if len(out)<3 and self._source_bounded_enabled():
             seen={c["formula_id"] for c in out}
             with self.Session() as s:
-                extra=[c for c in self._source_bounded_formula_candidates(s,pattern_ids) if c["formula_id"] not in seen]
+                extra=[c for c in self._source_bounded_formula_candidates(s,pattern_ids,condition_context,scope_report) if c["formula_id"] not in seen]
             out.extend(extra[:3-len(out)])
         return out
 

@@ -24,6 +24,7 @@ from app.services.recommendation.consumer_projection import (
 )
 from app.services.reasoning.primary import (
     RETRIEVAL_POLICY, derived_from, primary_governed_assessment)
+from app.services.governance import applicability
 from app.services.interview.differential import (
     differential_required_domains,
     signals_from_state,
@@ -592,6 +593,9 @@ class RecommendationAssembler:
         primary = primary_governed_assessment(reasoning.pattern_assessments)
 
         relationship_matches = []
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: condition-scoped links are gated
+        # inside the store, before a candidate exists; this only collects why.
+        scope_report = []
 
         if reasoning.ready_for_formula_retrieval and primary is not None:
             provenance = derived_from(primary)
@@ -599,9 +603,29 @@ class RecommendationAssembler:
                 {**dict(c), "derived_from": dict(provenance),
                  "retrieval_policy": RETRIEVAL_POLICY}
                 for c in self.corpus.eligible_formula_candidates_for_patterns(
-                    [primary.pattern_id]
+                    [primary.pattern_id],
+                    condition_context=request.condition_context,
+                    scope_report=scope_report,
                 )
             ]
+
+        scope_outcomes = {r.get("outcome") for r in scope_report}
+        scope_missing = sorted({f for r in scope_report
+                                if r.get("outcome") == applicability.MISSING
+                                for f in r.get("missing_context") or []})
+        # Ask only when the primary's scoped link is the thing standing between
+        # the patient and a governed formula -- never for a secondary, never
+        # when another link already produced a candidate.
+        scope_clarification_pending = bool(scope_missing) and not relationship_matches
+        if scope_clarification_pending:
+            reasoning.condition_scope_required = scope_missing
+            uncertainty_flags.append(applicability.FLAG_CONTEXT_REQUIRED)
+        if applicability.REJECTED in scope_outcomes:
+            uncertainty_flags.append(applicability.FLAG_NOT_SATISFIED)
+        if applicability.UNSUPPORTED in scope_outcomes:
+            uncertainty_flags.append(applicability.FLAG_UNSUPPORTED)
+        if applicability.SATISFIED in scope_outcomes and relationship_matches:
+            uncertainty_flags.append(applicability.FLAG_SATISFIED)
 
         # Backward-compatible reviewed indication retrieval.
         #
@@ -623,7 +647,10 @@ class RecommendationAssembler:
         # selection -- generate_interview returns formula_candidates=[] always,
         # and the interview contract has no formula field to populate. Any
         # candidate here came from the reviewed corpus, exactly as before.
-        if not relationship_matches:
+        # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: while the patient has not yet
+        # answered the fixed scope question, no other path stands in for the
+        # scoped one; this turn asks instead.
+        if not relationship_matches and not scope_clarification_pending:
             reviewed_matches = self.corpus.eligible_formula_candidates(
                 request.symptoms,
                 request.text_input,

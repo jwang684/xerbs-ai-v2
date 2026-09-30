@@ -27,3 +27,9 @@ class RecommendationRequest(BaseModel):
     # never by the browser, which must not be able to invent a
     # hypothesis or authorise a citation.
     interview_state: InterviewCarryState | None = None
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: explicit, patient-answered context
+    # for condition-scoped governed relationships, e.g. {"cough_primary": "YES"}.
+    # Derived by core from its own governed history (only after core itself
+    # asked the fixed question) -- never from model output or free text.
+    # Absent means "never answered".
+    condition_context: dict[str, str] | None = None

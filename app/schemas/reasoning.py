@@ -84,6 +84,11 @@ class ReasoningResponse(BaseModel):
     # (PRIMARY_SELECTED / NO_PATTERN_HYPOTHESES / AMBIGUOUS_PRIMARY_HYPOTHESIS /
     # INVALID_PRIMARY_HYPOTHESIS). None only on responses built elsewhere.
     primary_selection: str | None = None
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: patient-context fields a
+    # condition-scoped relationship of the PRIMARY pattern needs before it may
+    # produce a candidate (e.g. ["cough_primary"]). Core asks its fixed
+    # question for these; empty otherwise.
+    condition_scope_required: list[str] = Field(default_factory=list)
     convergence: ConvergenceMetrics | None = None
     # X1D-CLARIFY1: validated adaptive questions. Optional and defaulted, so
     # every existing caller and stored snapshot stays valid.

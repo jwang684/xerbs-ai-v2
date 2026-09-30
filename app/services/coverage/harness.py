@@ -31,8 +31,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
+from app.services.governance import applicability as scope
 from app.services.governance import lifecycle
 from app.services.knowledge.pattern_match import _BOUNDARY, _normalize, match_mechanism, name_components
 from app.services.reasoning.primary import RETRIEVAL_POLICY, select_primary
@@ -49,7 +50,14 @@ RELATIONSHIP_INELIGIBLE = "RELATIONSHIP_INELIGIBLE"
 NO_RELATIONSHIP = "NO_RELATIONSHIP"
 PATTERN_INELIGIBLE = "PATTERN_INELIGIBLE"
 NO_PATTERN_MATCH = "NO_PATTERN_MATCH"
-OUTCOMES = (FULL_PATH, CORE_CANONICAL_MISSING, FORMULA_INELIGIBLE, RELATIONSHIP_INELIGIBLE,
+# X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: the primary matched and its link is
+# condition-scoped, but the patient's explicit context does not let it through.
+MATCHED_PRIMARY_SCOPE_MISSING = "MATCHED_PRIMARY_SCOPE_MISSING"
+MATCHED_PRIMARY_SCOPE_REJECTED = "MATCHED_PRIMARY_SCOPE_REJECTED"
+UNSUPPORTED_SCOPE_FAIL_CLOSED = "UNSUPPORTED_SCOPE_FAIL_CLOSED"
+MATCHED_PRIMARY_SCOPE_SATISFIED = "MATCHED_PRIMARY_SCOPE_SATISFIED"   # a FULL_PATH detail
+OUTCOMES = (FULL_PATH, CORE_CANONICAL_MISSING, MATCHED_PRIMARY_SCOPE_MISSING, MATCHED_PRIMARY_SCOPE_REJECTED,
+            UNSUPPORTED_SCOPE_FAIL_CLOSED, FORMULA_INELIGIBLE, RELATIONSHIP_INELIGIBLE,
             NO_RELATIONSHIP, PATTERN_INELIGIBLE, NO_PATTERN_MATCH, "PRIMARY_NOT_SELECTED")
 GOVERNED_OUTCOMES = frozenset({FULL_PATH, CORE_CANONICAL_MISSING})
 
@@ -95,6 +103,10 @@ class EntitySnap:
     external_id: str | None = None
     source_scope: str | None = None
     tier: str | None = None          # what-if only: MILD | SEVERE | RECOVERY
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: content["applicability"], verbatim.
+    # NO_APPLICABILITY means the content has no such key; an explicit None is a
+    # present-but-malformed value and fails closed, exactly as in the store.
+    applicability: Any = "__NO_APPLICABILITY__"
     simulated: bool = False
 
 
@@ -306,7 +318,26 @@ def _formula_ranking_eligible(e):
     return e is not None and e.entity_type == "formula" and e.review_status == REVIEWED and e.clinical_ranking_eligible
 
 
-def _source_bounded_formula_candidates(snap, pattern_ids):
+NO_APPLICABILITY = "__NO_APPLICABILITY__"
+
+
+def _content(e):
+    if e is None or e.applicability == NO_APPLICABILITY:
+        return {}
+    return {"applicability": e.applicability}
+
+
+def _scope_gate(snap, rel, condition_context, report):
+    """PersistentClinicalStore._scope_gate: same shared evaluator, same order."""
+    outcome, conditions, missing = scope.evaluate(
+        [_content(snap.entity(rel.pattern_id)), _content(snap.entity(rel.formula_id))], condition_context)
+    if outcome != scope.NOT_SCOPED and report is not None:
+        report.append({"relationship_id": rel.relationship_id, "outcome": outcome,
+                       "conditions": list(conditions), "missing_context": list(missing)})
+    return list(conditions) if scope.eligible(outcome) else None
+
+
+def _source_bounded_formula_candidates(snap, pattern_ids, condition_context=None, report=None):
     out = {}
     for rel in snap.relationships:
         if rel.pattern_id not in pattern_ids or rel.relationship_type != PATTERN_FORMULA:
@@ -319,6 +350,8 @@ def _source_bounded_formula_candidates(snap, pattern_ids):
         shared = (verified_source_ids(snap, rel.evidence_source_ids)
                   & endpoint_sources(snap, pattern) & endpoint_sources(snap, formula))
         if not shared:
+            continue
+        if _scope_gate(snap, rel, condition_context, report) is None:
             continue
         item = out.setdefault(formula.entity_id,
                               {"count": 0, "patterns": [], "sources": set(), "formula": formula,
@@ -338,7 +371,7 @@ def _source_bounded_formula_candidates(snap, pattern_ids):
     return result
 
 
-def formula_candidates(snap, pattern_ids: Sequence[str]):
+def formula_candidates(snap, pattern_ids: Sequence[str], condition_context=None, report=None):
     """eligible_formula_candidates_for_patterns: reviewed links first, then source-bounded."""
     pattern_ids = [x for x in pattern_ids if x]
     if not pattern_ids:
@@ -352,6 +385,8 @@ def formula_candidates(snap, pattern_ids: Sequence[str]):
         formula = snap.entity(rel.formula_id)
         if not _formula_ranking_eligible(formula):
             continue
+        if _scope_gate(snap, rel, condition_context, report) is None:
+            continue
         item = scored.setdefault(formula.entity_id, {"count": 0, "patterns": [], "formula": formula})
         item["count"] += 1
         item["patterns"].append(rel.pattern_id)
@@ -362,7 +397,8 @@ def formula_candidates(snap, pattern_ids: Sequence[str]):
                                     tuple(meta["patterns"]), f.review_status, f.source_scope, f.simulated, f.tier))
     if len(out) < 3 and source_bounded_enabled(snap):
         seen = {c.formula_id for c in out}
-        extra = [c for c in _source_bounded_formula_candidates(snap, pattern_ids) if c.formula_id not in seen]
+        extra = [c for c in _source_bounded_formula_candidates(snap, pattern_ids, condition_context, report)
+                 if c.formula_id not in seen]
         out.extend(extra[:3 - len(out)])
     return out
 
@@ -421,6 +457,9 @@ class TurnInput:
     recorded_formula_ids: tuple = ()
     recorded_state: str | None = None
     origin: str = "STAGING_TRACE"
+    # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P18: explicit patient-answered context,
+    # e.g. {"cough_primary": "YES"}. Historical trace turns never carry one.
+    condition_context: Any = None
 
 
 @dataclass(frozen=True)
@@ -500,7 +539,16 @@ def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION,
             return result(PATTERN_INELIGIBLE, blocked[0]["reason"])
         return result(NO_PATTERN_MATCH, detail)
 
-    cands = formula_candidates(snap, pattern_ids)
+    report = []
+    cands = formula_candidates(snap, pattern_ids, turn.condition_context, report)
+    outcomes = {r["outcome"] for r in report}
+    if not cands and outcomes:
+        if scope.MISSING in outcomes:
+            return result(MATCHED_PRIMARY_SCOPE_MISSING,
+                          ",".join(sorted({f for r in report for f in r["missing_context"]})))
+        if scope.REJECTED in outcomes:
+            return result(MATCHED_PRIMARY_SCOPE_REJECTED)
+        return result(UNSUPPORTED_SCOPE_FAIL_CLOSED)
     if not cands:
         rels = [r for r in snap.relationships
                 if r.pattern_id in pattern_ids and r.relationship_type == PATTERN_FORMULA]
@@ -513,8 +561,9 @@ def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION,
 
     severe_only = all(c.tier == "SEVERE" for c in cands)
     core = next((c.name for c in cands if core_canonical_formula(snap, c.name)), None)
+    scoped_detail = MATCHED_PRIMARY_SCOPE_SATISFIED if scope.SATISFIED in outcomes else None
     if core:
-        return result(FULL_PATH, None, cands, core, severe_only)
+        return result(FULL_PATH, scoped_detail, cands, core, severe_only)
     return result(CORE_CANONICAL_MISSING, "NO_SINGLE_CORE_HERBAL_FORMULAS_ROW_WITH_EXACT_NAME", cands, None,
                   severe_only)
 
