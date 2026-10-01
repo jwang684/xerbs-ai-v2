@@ -626,6 +626,9 @@ class RecommendationAssembler:
             uncertainty_flags.append(applicability.FLAG_UNSUPPORTED)
         if applicability.SATISFIED in scope_outcomes and relationship_matches:
             uncertainty_flags.append(applicability.FLAG_SATISFIED)
+        if any((c.get("governance") or {}).get("rule_status") == applicability.PROVISIONAL_ENGINEERING_RULE
+               for c in relationship_matches):
+            uncertainty_flags.append(applicability.FLAG_PROVISIONAL)
 
         # Backward-compatible reviewed indication retrieval.
         #

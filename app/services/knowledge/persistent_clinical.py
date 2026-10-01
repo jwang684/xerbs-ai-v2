@@ -492,6 +492,12 @@ class PersistentClinicalStore:
                     "applicability":sorted(meta["conditions"]),
                 },
             })
+            # X1D-P19E: a link that passed a provisional condition says so; it is
+            # an engineering rule awaiting clinical review, not just source-verified.
+            from app.services.governance import applicability as _scope
+            if _scope.is_provisional(meta["conditions"]):
+                result[-1]["governance"]["rule_status"]=_scope.PROVISIONAL_ENGINEERING_RULE
+                result[-1]["governance"]["clinical_review"]=_scope.PENDING_CLINICAL_REVIEW
         return result
 
 
