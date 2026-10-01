@@ -42,15 +42,72 @@ COUGH_PRIMARY = "COUGH_PRIMARY"
 # provisional_rules_enabled().
 COUGH_EXCLUSION_FEATURES_NONE = "COUGH_EXCLUSION_FEATURES_NONE"
 
+# X1D-P19R: the same question as an APPROVED, versioned condition. It may only
+# appear inside its contract (see APPLICABILITY_CONTRACTS), never on its own.
+COUGH_EXCLUSION_FEATURES_NONE_P19C_V1 = "COUGH_EXCLUSION_FEATURES_NONE_P19C_V1"
+
 #: Supported conditions and the patient-context field that answers each.
 CONDITION_CONTEXT_FIELDS = {
     COUGH_PRIMARY: "cough_primary",
     COUGH_EXCLUSION_FEATURES_NONE: "cough_exclusion_features",
+    COUGH_EXCLUSION_FEATURES_NONE_P19C_V1: "cough_exclusion_features",
 }
 YES, NO, UNKNOWN = "YES", "NO", "UNKNOWN"
 NONE_REPORTED, PRESENT = "NONE", "PRESENT"
 #: The single context value that satisfies each condition. Anything else rejects.
-SATISFYING_VALUE = {COUGH_PRIMARY: YES, COUGH_EXCLUSION_FEATURES_NONE: NONE_REPORTED}
+SATISFYING_VALUE = {COUGH_PRIMARY: YES, COUGH_EXCLUSION_FEATURES_NONE: NONE_REPORTED,
+                    COUGH_EXCLUSION_FEATURES_NONE_P19C_V1: NONE_REPORTED}
+
+# ----------------------------------------------------------------------
+# X1D-P19R: approved, versioned applicability contracts.
+#
+# A contract pins the exact ordered conditions and the reviewed document they
+# were approved from (by SHA-256). Content opts in with
+#     {"conditions": [...], "contract_version": "<id>"}
+# and the conditions must equal the contract's exactly. A contract is usable
+# only while ``active``; an inactive or unknown contract fails closed and makes
+# the content's pattern invisible to matching (pattern_matchable).
+#
+# X1D-P19C-V1 was approved by the project owner's instruction ("原稿无修改通过").
+# The packet's §6 approval record (reviewer name, qualification, date,
+# signature) is not filled in, so the contract stays inactive until that
+# record is completed and a reviewed commit activates it. Activation is a code
+# change: no setting, variable or request can turn it on.
+# ----------------------------------------------------------------------
+APPROVED_APPLICABILITY_CONTRACT = "APPROVED_APPLICABILITY_CONTRACT"
+APPROVAL_RECORD_INCOMPLETE = "APPROVAL_RECORD_INCOMPLETE"
+APPROVAL_RECORD_COMPLETE = "APPROVAL_RECORD_COMPLETE"
+
+APPLICABILITY_CONTRACTS = {
+    "X1D-P19C-V1": {
+        "conditions": (COUGH_PRIMARY, COUGH_EXCLUSION_FEATURES_NONE_P19C_V1),
+        "source": "《咳嗽中医诊疗专家共识意见（2021）》 中医杂志 62(16) DOI 10.13288/j.11-2166/r.2021.16.018 §1.1 §4.2.3",
+        "review_packet": "X1D-P19C-cough-consensus-2021-applicability-review.md",
+        "review_packet_sha256": "82db5e2a57a47cf2aac0e42d5d2dffe623afd846859cbd820049a2ccd27a1b5e",
+        "approval_basis": "OWNER_INSTRUCTION",
+        "approval_record": APPROVAL_RECORD_INCOMPLETE,
+        "active": False,
+    },
+}
+#: Conditions that are valid only inside a contract.
+CONTRACT_ONLY_CONDITIONS = frozenset({COUGH_EXCLUSION_FEATURES_NONE_P19C_V1})
+
+
+def contract_active(version) -> bool:
+    c = APPLICABILITY_CONTRACTS.get(version) if isinstance(version, str) else None
+    return bool(c) and c.get("active") is True and c.get("approval_record") == APPROVAL_RECORD_COMPLETE
+
+
+def contract_for(conditions):
+    """The contract whose ordered conditions are exactly these, or None."""
+    t = tuple(conditions or ())
+    return next((k for k, c in APPLICABILITY_CONTRACTS.items() if c["conditions"] == t), None)
+
+
+def contract_for_set(conditions):
+    """The contract whose conditions are exactly this set (order-free), or None."""
+    want = set(conditions or ())
+    return next((k for k, c in APPLICABILITY_CONTRACTS.items() if set(c["conditions"]) == want), None)
 
 #: Conditions whose rule is not clinically approved.
 PROVISIONAL_CONDITIONS = frozenset({COUGH_EXCLUSION_FEATURES_NONE})
@@ -95,10 +152,15 @@ def read_conditions(content: Any):
     a = content.get("applicability")
     if not isinstance(a, Mapping):
         return UNSUPPORTED, ()
+    contract = None
     if set(a.keys()) == {"condition"}:
         items = [a.get("condition")]
     elif set(a.keys()) == {"conditions"} and isinstance(a.get("conditions"), list):
         items = list(a.get("conditions"))
+    elif set(a.keys()) == {"conditions", "contract_version"} and isinstance(a.get("conditions"), list):
+        items, contract = list(a.get("conditions")), a.get("contract_version")
+        if not isinstance(contract, str) or contract not in APPLICABILITY_CONTRACTS                 or tuple(items) != APPLICABILITY_CONTRACTS[contract]["conditions"]:
+            return UNSUPPORTED, ()
     else:
         return UNSUPPORTED, ()
     if not items or len(set(map(repr, items))) != len(items):
@@ -106,7 +168,31 @@ def read_conditions(content: Any):
     for c in items:
         if not isinstance(c, str) or c not in CONDITION_CONTEXT_FIELDS:
             return UNSUPPORTED, ()
+        if c in CONTRACT_ONLY_CONDITIONS and contract is None:
+            return UNSUPPORTED, ()
     return "SCOPED", tuple(items)
+
+
+def pattern_matchable(content: Any) -> bool:
+    """Whether a pattern with this content may match a model hypothesis at all.
+
+    False while its applicability depends on something deliberately switched
+    off -- an inactive or unknown contract, or a provisional rule while
+    provisional rules are disabled. Such content is then exactly as if it had
+    never been ingested: no match, no readiness, no question, no candidate.
+    Malformed applicability stays matchable (P18): its links fail closed.
+    """
+    if not isinstance(content, Mapping) or "applicability" not in content:
+        return True
+    a = content.get("applicability")
+    if isinstance(a, Mapping) and "contract_version" in a and not contract_active(a.get("contract_version")):
+        return False
+    state, items = read_conditions(content)
+    if state == "SCOPED" and is_provisional(items) and not provisional_rules_enabled():
+        return False
+    if state == "SCOPED" and any(c in CONTRACT_ONLY_CONDITIONS for c in items)             and not contract_active(contract_for(items)):
+        return False
+    return True
 
 
 def is_provisional(conditions: Iterable[str]) -> bool:
@@ -133,6 +219,8 @@ def evaluate(contents: Iterable[Any], condition_context: Any):
     if not conditions:
         return NOT_SCOPED, (), ()
     if is_provisional(conditions) and not provisional_rules_enabled():
+        return UNSUPPORTED, tuple(conditions), ()
+    if any(c in CONTRACT_ONLY_CONDITIONS for c in conditions) and not contract_active(contract_for(conditions)):
         return UNSUPPORTED, tuple(conditions), ()
     ctx = condition_context if isinstance(condition_context, Mapping) else {}
     for condition in conditions:

@@ -76,7 +76,8 @@ class SafetyEngine:
                 content_hash=lifecycle.relationship_content_hash(
                     a.external_id, req.relationship_type, b.external_id)
 
-            evidence=[{'source_id':req.source_id,'source_version':1,'locator':None}] if req.source_id else []
+            locator=(req.locator or '').strip() or None
+            evidence=[{'source_id':req.source_id,'source_version':1,'locator':locator}] if req.source_id else []
             row=ClinicalRelationship(
                 id=f'rel-{uuid4().hex[:16]}', source_entity_id=a.id, target_entity_id=b.id,
                 relationship_type=req.relationship_type,
@@ -91,7 +92,7 @@ class SafetyEngine:
             for item in evidence:
                 s.add(GovernedObjectSource(
                     object_type=REL_OBJECT, object_id=row.id,
-                    source_id=item['source_id'], source_version=1, locator=None))
+                    source_id=item['source_id'], source_version=1, locator=item['locator']))
             self._record_governed_creation(
                 s, object_type=REL_OBJECT, object_id=row.id, external_id=external_id,
                 snapshot={'source_entity_id':a.id,'target_entity_id':b.id,

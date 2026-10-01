@@ -37,6 +37,10 @@ class RelationshipCreateRequest(BaseModel):
     target_entity_id: str
     relationship_type: Literal['PATTERN_FORMULA','FORMULA_HERB']
     source_id: str | None = None
+    # X1D-P19R: which section of the source states this link (and, for a
+    # condition-scoped link, which applicability contract it is read under).
+    # Part of the evidence hash, so it is part of what the verifier signs.
+    locator: str | None = None
     actor_id: str
     actor_role: str = 'CLINICAL_REVIEWER'
 

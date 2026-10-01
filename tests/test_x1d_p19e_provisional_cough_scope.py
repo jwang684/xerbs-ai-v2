@@ -93,11 +93,16 @@ def test_provisional_rules_are_off_by_a_code_constant_not_bound_to_any_input():
 @pytest.mark.parametrize("ctx", [None, {"cough_primary": "YES"}, YES_NONE,
                                  {"cough_primary": "YES", "cough_exclusion_features": "NONE", "provisional": "on"}])
 def test_with_provisional_rules_off_the_link_fails_closed_and_asks_nothing(store, ctx):
+    """X1D-P19R made this stricter: the provisional pattern is not even matchable, so
+    ordinary traffic behaves exactly as if it had never been ingested."""
     cough_slice(store)
     resp = assemble(store, hyp("风热犯肺", 0.8), context=ctx)
     assert resp.formula_candidates == []
     assert resp.reasoning.condition_scope_required == []          # no patient-visible question at all
-    assert A.FLAG_UNSUPPORTED in resp.uncertainty_flags
+    assert resp.reasoning.pattern_assessments[0].corpus_match is False
+    assert resp.reasoning.ready_for_formula_retrieval is False
+    assert P.PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS in resp.uncertainty_flags
+    assert not [f for f in resp.uncertainty_flags if f.startswith("CONDITION_SCOPE")]
 
 
 def test_with_provisional_rules_off_the_fenghan_path_is_unchanged(store):

@@ -252,6 +252,9 @@ def endpoint_sources(snap, e):
 def pattern_gate(snap, e):
     """(eligible, basis_or_reason) for one pattern under match_reviewed_patterns."""
     statuses = (REVIEWED, SOURCE_VERIFIED) if source_bounded_enabled(snap) else (REVIEWED,)
+    # X1D-P19R: PersistentClinicalStore.match_reviewed_patterns skips these first.
+    if not scope.pattern_matchable(_content(e)):
+        return False, "APPLICABILITY_INACTIVE_PATTERN_NOT_MATCHABLE"
     if e.review_status not in statuses:
         if e.review_status == SOURCE_VERIFIED:
             return False, "SOURCE_BOUNDED_RETRIEVAL_DISABLED_IN_%s" % (snap.environment or "").upper()

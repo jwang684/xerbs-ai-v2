@@ -398,6 +398,10 @@ class PersistentClinicalStore:
                     if not self._source_verified_entity_sources(s,e): continue
                     basis="SOURCE_VERIFIED"
                 snap=self._latest_snapshot(s,e.id)
+                # X1D-P19R: content whose applicability is deliberately inactive is
+                # invisible to matching -- as if it had never been ingested.
+                from app.services.governance import applicability as _scope
+                if not _scope.pattern_matchable(snap): continue
                 if matches_reviewed_name(model_name,[snap.get('name',''),*snap.get('aliases',[])]):
                     d=self._serialize(s,e,snap); d['governance_basis']=basis
                     # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: provenance only; matching is unchanged.
@@ -498,6 +502,13 @@ class PersistentClinicalStore:
             if _scope.is_provisional(meta["conditions"]):
                 result[-1]["governance"]["rule_status"]=_scope.PROVISIONAL_ENGINEERING_RULE
                 result[-1]["governance"]["clinical_review"]=_scope.PENDING_CLINICAL_REVIEW
+            # X1D-P19R: a link gated by an approved contract names it and its approval basis.
+            contract=_scope.contract_for_set(meta["conditions"])
+            if contract and _scope.contract_active(contract):
+                c=_scope.APPLICABILITY_CONTRACTS[contract]
+                result[-1]["governance"]["rule_status"]=_scope.APPROVED_APPLICABILITY_CONTRACT
+                result[-1]["governance"]["applicability_contract"]=contract
+                result[-1]["governance"]["applicability_approval_basis"]=c["approval_basis"]
         return result
 
 
