@@ -13,6 +13,7 @@ through the real ingest -> submit -> source-verify flow.
 """
 
 import asyncio
+import inspect
 from pathlib import Path
 
 import pytest
@@ -86,8 +87,19 @@ def test_provisional_rules_are_off_by_a_code_constant_not_bound_to_any_input():
     src = Path(A.__file__).read_text(encoding="utf-8")
     assert "_PROVISIONAL_ENGINEERING_RULES_ENABLED = False" in src
     # Nothing outside this module's own constant can turn it on.
-    for binding in ("import os", "os.environ", "getenv", "get_settings", "from app.core"):
+    for binding in ("import os", "os.environ", "getenv"):
         assert binding not in src, binding
+    # X1D-P19R: settings are read in exactly one place, the restrict-only Staging
+    # check on approved contracts; the provisional switch never consults them.
+    assert src.count("get_settings") == 2 and src.count("from app.core") == 1
+    assert "from app.core.config import get_settings" in inspect.getsource(A._environment)
+    assert "_environment" not in inspect.getsource(A.provisional_rules_enabled)
+
+
+@pytest.mark.parametrize("environment", ["staging", "production", "test", ""])
+def test_no_environment_turns_provisional_rules_on(monkeypatch, environment):
+    monkeypatch.setattr(A, "_environment", lambda: environment)
+    assert A.provisional_rules_enabled() is False
 
 
 @pytest.mark.parametrize("ctx", [None, {"cough_primary": "YES"}, YES_NONE,

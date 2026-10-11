@@ -68,34 +68,51 @@ SATISFYING_VALUE = {COUGH_PRIMARY: YES, COUGH_EXCLUSION_FEATURES_NONE: NONE_REPO
 # only while ``active``; an inactive or unknown contract fails closed and makes
 # the content's pattern invisible to matching (pattern_matchable).
 #
-# X1D-P19C-V1 was approved by the project owner's instruction ("原稿无修改通过").
-# The packet's §6 approval record (reviewer name, qualification, date,
-# signature) is not filled in, so the contract stays inactive until that
-# record is completed and a reviewed commit activates it. Activation is a code
-# change: no setting, variable or request can turn it on.
+# X1D-P19C-V1 was approved by the project owner's instruction ("原稿无修改通过"),
+# which the owner designated as the approval of record (X1D-P19R). The record
+# is docs/governance/X1D-P19C-V1-owner-approval-of-record.md, pinned by SHA-256
+# next to the unchanged packet. It is a project-owner approval, NOT an
+# independent clinical review or attestation, and it covers Staging only: the
+# contract is active only in the environments listed on it, so the same commit
+# deployed anywhere else fails closed. Activation is a code change: no setting,
+# variable or request can turn a contract on.
 # ----------------------------------------------------------------------
 APPROVED_APPLICABILITY_CONTRACT = "APPROVED_APPLICABILITY_CONTRACT"
 APPROVAL_RECORD_INCOMPLETE = "APPROVAL_RECORD_INCOMPLETE"
 APPROVAL_RECORD_COMPLETE = "APPROVAL_RECORD_COMPLETE"
+NOT_INDEPENDENTLY_CLINICALLY_ATTESTED = "NOT_INDEPENDENTLY_CLINICALLY_ATTESTED"
+# Staging, plus the non-clinical local/test environments (no real patients).
+STAGING_ONLY_ENVIRONMENTS = frozenset({"staging", "development", "test", "testing", "local"})
 
 APPLICABILITY_CONTRACTS = {
     "X1D-P19C-V1": {
         "conditions": (COUGH_PRIMARY, COUGH_EXCLUSION_FEATURES_NONE_P19C_V1),
         "source": "《咳嗽中医诊疗专家共识意见（2021）》 中医杂志 62(16) DOI 10.13288/j.11-2166/r.2021.16.018 §1.1 §4.2.3",
-        "review_packet": "X1D-P19C-cough-consensus-2021-applicability-review.md",
+        "review_packet": "docs/governance/X1D-P19C-cough-consensus-2021-applicability-review.md",
         "review_packet_sha256": "82db5e2a57a47cf2aac0e42d5d2dffe623afd846859cbd820049a2ccd27a1b5e",
         "approval_basis": "OWNER_INSTRUCTION",
-        "approval_record": APPROVAL_RECORD_INCOMPLETE,
-        "active": False,
+        "approval_record": APPROVAL_RECORD_COMPLETE,
+        "approval_record_ref": "docs/governance/X1D-P19C-V1-owner-approval-of-record.md",
+        "approval_record_sha256": "af26c7bca12ff43c9dcc8b3102e8089dd29bdb19e72cbfdcf4637b959e91842d",
+        "approval_date": "2026-10-11",
+        "clinical_review": NOT_INDEPENDENTLY_CLINICALLY_ATTESTED,
+        "environments": STAGING_ONLY_ENVIRONMENTS,
+        "active": True,
     },
 }
 #: Conditions that are valid only inside a contract.
 CONTRACT_ONLY_CONDITIONS = frozenset({COUGH_EXCLUSION_FEATURES_NONE_P19C_V1})
 
 
+def _environment() -> str:
+    from app.core.config import get_settings
+    return (get_settings().environment or "").strip().lower()
+
+
 def contract_active(version) -> bool:
     c = APPLICABILITY_CONTRACTS.get(version) if isinstance(version, str) else None
-    return bool(c) and c.get("active") is True and c.get("approval_record") == APPROVAL_RECORD_COMPLETE
+    return (bool(c) and c.get("active") is True and c.get("approval_record") == APPROVAL_RECORD_COMPLETE
+            and _environment() in c.get("environments", ()))
 
 
 def contract_for(conditions):

@@ -5,11 +5,15 @@ formula only when, in order, the patient answers 是 to cough-primary and 都没
 the P19C §3 exclusion question. The contract pins those exact conditions and the
 reviewed packet's SHA-256.
 
-The project owner approved the packet by instruction; its §6 approval record is
-not filled in. The contract therefore ships INACTIVE: content that references it
-is invisible to matching. Tests activate it in-process only. All clinical objects
-here are SYNTHETIC in-memory fixtures built through the real flows.
+The project owner approved the packet by instruction and designated that
+instruction as the approval of record (docs/governance/, pinned by SHA-256). The
+contract ships ACTIVE for Staging only; it is NOT an independent clinical review.
+Inactive, incomplete and non-Staging cases are exercised in-process. All clinical
+objects here are SYNTHETIC in-memory fixtures built through the real flows.
 """
+
+import hashlib
+import pathlib
 
 import asyncio
 
@@ -38,10 +42,18 @@ YES_NONE = {"cough_primary": "YES", "cough_exclusion_features": "NONE"}
 SYN_SRC = "synthetic-cough-2021"
 
 
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
+
 @pytest.fixture
-def contract_on(monkeypatch):
-    entry = dict(A.APPLICABILITY_CONTRACTS[CONTRACT], active=True, approval_record=A.APPROVAL_RECORD_COMPLETE)
-    monkeypatch.setitem(A.APPLICABILITY_CONTRACTS, CONTRACT, entry)
+def contract_on():
+    # the SHIPPED contract, unpatched
+    assert A.contract_active(CONTRACT) is True
+
+
+@pytest.fixture
+def contract_off(monkeypatch):
+    monkeypatch.setitem(A.APPLICABILITY_CONTRACTS, CONTRACT, dict(A.APPLICABILITY_CONTRACTS[CONTRACT], active=False))
 
 
 class Scripted(LLMProvider):
@@ -87,14 +99,61 @@ def test_the_contract_pins_conditions_packet_and_approval_basis():
     assert c["conditions"] == ("COUGH_PRIMARY", "COUGH_EXCLUSION_FEATURES_NONE_P19C_V1")
     assert c["review_packet_sha256"] == "82db5e2a57a47cf2aac0e42d5d2dffe623afd846859cbd820049a2ccd27a1b5e"
     assert c["approval_basis"] == "OWNER_INSTRUCTION"
-    # §6 of the packet is not filled in: the contract ships inactive
-    assert c["approval_record"] == A.APPROVAL_RECORD_INCOMPLETE and c["active"] is False
+    assert c["approval_record"] == A.APPROVAL_RECORD_COMPLETE and c["active"] is True
+    assert c["approval_date"] == "2026-10-11"
+    assert c["clinical_review"] == "NOT_INDEPENDENTLY_CLINICALLY_ATTESTED"
+    assert c["environments"] == {"staging", "development", "test", "testing", "local"}
+    assert "production" not in c["environments"]
+    assert A.contract_active(CONTRACT) is True
+    # it is the ONLY contract, and provisional engineering rules stay off
+    assert list(A.APPLICABILITY_CONTRACTS) == [CONTRACT]
+    assert A.provisional_rules_enabled() is False
+
+
+@pytest.mark.parametrize("key", ["review_packet", "approval_record_ref"])
+def test_the_packet_and_the_approval_record_match_their_pinned_hashes(key):
+    c = A.APPLICABILITY_CONTRACTS[CONTRACT]
+    pin = c["review_packet_sha256"] if key == "review_packet" else c["approval_record_sha256"]
+    assert hashlib.sha256((REPO / c[key]).read_bytes()).hexdigest() == pin
+
+
+def test_the_approval_record_states_its_basis_and_limits():
+    text = (REPO / A.APPLICABILITY_CONTRACTS[CONTRACT]["approval_record_ref"]).read_text(encoding="utf-8")
+    for must in ("X1D-P19C-V1", "OWNER_INSTRUCTION", "2026-10-11", "NOT INDEPENDENTLY CLINICALLY ATTESTED",
+                 "FOUR OBJECTS SOURCE_VERIFIED", "STAGING ONLY", "unchanged",
+                 "原稿无修改通过，P19C 第3节问题、第5节决策表及 A–H 项均已明确批准。",
+                 "82db5e2a57a47cf2aac0e42d5d2dffe623afd846859cbd820049a2ccd27a1b5e",
+                 "1930237a-2bbb-4f0b-b589-579573c57d4c", "9bdefef1-74eb-4e52-ae56-ebbd8079c51a",
+                 "8daf2ad7-eecf-49a7-a279-8124b8094fef", "1c7f3398-d63f-4081-8148-a31a539f8999"):
+        assert must in text, must
+
+
+@pytest.mark.parametrize("environment", ["production", "prod", "", "staging-2"])
+def test_outside_staging_the_contract_is_inactive_and_fails_closed(store, monkeypatch, environment):
+    monkeypatch.setattr(A, "_environment", lambda: environment)
     assert A.contract_active(CONTRACT) is False
+    cough_slice(store)
+    resp = assemble(store, hyp("风热犯肺", 0.8), context=YES_NONE)
+    assert resp.formula_candidates == [] and resp.reasoning.condition_scope_required == []
 
 
-# 13 (unapproved stays inaccessible) -- the shipped default
+def test_the_environment_comes_from_settings(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    try:
+        assert A.contract_active(CONTRACT) is False
+        monkeypatch.setenv("ENVIRONMENT", "Staging")
+        get_settings.cache_clear()
+        assert A.contract_active(CONTRACT) is True
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
+# 13 (unapproved stays inaccessible) -- an inactive contract
 @pytest.mark.parametrize("ctx", [None, {"cough_primary": "YES"}, YES_NONE])
-def test_an_inactive_contract_leaves_ordinary_traffic_exactly_as_before(store, ctx):
+def test_an_inactive_contract_leaves_ordinary_traffic_exactly_as_before(store, contract_off, ctx):
     cough_slice(store)
     resp = assemble(store, hyp("风热犯肺", 0.8), context=ctx)
     assert resp.formula_candidates == []
@@ -217,10 +276,9 @@ def test_the_relationship_locator_is_part_of_the_evidence_hash(store):
 # ----------------------------------------------------------------------
 @pytest.mark.parametrize("activate", [False, True])
 def test_15_the_fenghan_path_is_unchanged(store, monkeypatch, activate):
-    if activate:
+    if not activate:
         monkeypatch.setitem(A.APPLICABILITY_CONTRACTS, CONTRACT,
-                            dict(A.APPLICABILITY_CONTRACTS[CONTRACT], active=True,
-                                 approval_record=A.APPROVAL_RECORD_COMPLETE))
+                            dict(A.APPLICABILITY_CONTRACTS[CONTRACT], active=False))
     cough_slice(store)
     resp = assemble(store, hyp("风寒束表", 0.8), context=YES_NONE, text=FLU_TEXT)
     assert [c.name for c in resp.formula_candidates] == ["麻黄汤加味"]
@@ -228,7 +286,9 @@ def test_15_the_fenghan_path_is_unchanged(store, monkeypatch, activate):
 
 
 def test_active_flag_alone_is_not_enough_without_a_complete_record(store, monkeypatch):
-    monkeypatch.setitem(A.APPLICABILITY_CONTRACTS, CONTRACT, dict(A.APPLICABILITY_CONTRACTS[CONTRACT], active=True))
+    monkeypatch.setitem(A.APPLICABILITY_CONTRACTS, CONTRACT,
+                        dict(A.APPLICABILITY_CONTRACTS[CONTRACT], approval_record=A.APPROVAL_RECORD_INCOMPLETE))
+    assert A.contract_active(CONTRACT) is False
     cough_slice(store)
     assert assemble(store, hyp("风热犯肺", 0.8), context=YES_NONE).formula_candidates == []
 
