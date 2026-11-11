@@ -352,7 +352,8 @@ def _material_for(focus: str) -> Tuple[str, ...]:
 
 
 def assess_coverage(text: str,
-                    differential_domains: Iterable[str] = ()) -> CoverageAssessment:
+                    differential_domains: Iterable[str] = (),
+                    answered_domains: Iterable[str] = ()) -> CoverageAssessment:
     """Mark every domain from explicit patient facts only.
 
     Nothing is inferred and nothing is defaulted: a domain the patient did not
@@ -372,8 +373,18 @@ def assess_coverage(text: str,
 
     This grants no score and no priority. It only stops a domain being struck
     out before the existing weights get to judge it.
+
+    X1D-P19B-FIX adds ``answered_domains``: domains the patient explicitly
+    answered in an earlier round of THIS case, from the structured answers
+    core carries (interview_state.resolvable_evidence.answers). The current
+    turn's text only holds this round's answers, so without this an answer
+    from round 1 reads as UNKNOWN again in round 3 and the domain is re-asked.
+    An answered domain is KNOWN as a record of the interview -- it says the
+    question was answered, not what the answer means. Only explicit answers
+    count; a domain nobody answered stays exactly as the text leaves it.
     """
     text = text or ""
+    answered = {d for d in (answered_domains or ()) if d in DOMAINS_BY_KEY}
     focus = identify_focus(text)
     material = _material_for(focus)
     # R2 lifts the veto by changing this domain's STATE, deliberately not by
@@ -412,6 +423,8 @@ def assess_coverage(text: str,
                                   else NOT_RELEVANT)
         else:
             states[domain.key] = UNKNOWN
+        if domain.key in answered:
+            states[domain.key] = KNOWN
 
     return CoverageAssessment(focus=focus, states=states, material=material)
 

@@ -57,19 +57,24 @@ FULL_REASONING = "FULL_REASONING"
 #
 # The unit is deliberate and worth stating once: interview_depth counts the
 # governed turns this case has ALREADY COMPLETED, not including the submission
-# being routed. So turn 1 arrives as depth 0 and turn 4 as depth 3, and
-# "depth >= MAX_INTERVIEW_TURNS" reads exactly as "three interview turns have
+# being routed. So turn 1 arrives as depth 0 and turn 3 as depth 2, and
+# "depth >= MAX_INTERVIEW_TURNS" reads exactly as "two interview turns have
 # happened; that is enough".
 #
 #   turn 1  depth 0  ->  INTERVIEW
 #   turn 2  depth 1  ->  INTERVIEW
-#   turn 3  depth 2  ->  INTERVIEW
-#   turn 4  depth 3  ->  FULL_REASONING / INTERVIEW_DEPTH_REACHED
+#   turn 3  depth 2  ->  FULL_REASONING / INTERVIEW_DEPTH_REACHED
 #
-# Mirrors core's clarification_policy.MAX_CLARIFICATION_TURNS: past that depth
-# core shows no further adaptive questions anyway, so continuing to interview
-# would spend a call producing questions nobody will be asked.
-MAX_INTERVIEW_TURNS = 3
+# Must equal the number of turns on which core shows adaptive questions. core's
+# clarification_policy.MAX_CLARIFICATION_TURNS = 3 allows them while the
+# server-derived turn (prior turns + 1) is < 3, i.e. on turns 1 and 2 only.
+#
+# X1D-P19B-FIX: this was 3, one more than core. Turn 3 then ran as an interview
+# whose questions core would not show: the patient got NEEDS_MORE_INFORMATION
+# with nothing to answer, no hypotheses, and no way to reach turn 4 (Staging
+# records #313-#315). A cross-repository contract test in core pins the two
+# budgets together.
+MAX_INTERVIEW_TURNS = 2
 
 # Reasons, for the record. A turn should never be routed without one.
 REASON_PROVIDER_UNSUPPORTED = "PROVIDER_DOES_NOT_SUPPORT_INTERVIEW"
@@ -97,6 +102,7 @@ def decide_mode(
     missing_information: Optional[Sequence[Any]] = None,
     interview_depth: int = 0,
     supports_interview: bool = True,
+    answered_domains: Sequence[str] = (),
 ) -> Tuple[str, str]:
     """Return (mode, reason). Deterministic, and never consults the model.
 
@@ -106,6 +112,10 @@ def decide_mode(
     ``interview_depth`` is the number of governed turns this case has already
     completed, excluding the submission being routed. See MAX_INTERVIEW_TURNS
     above for the turn-by-turn table.
+
+    ``answered_domains`` are domains the patient explicitly answered in earlier
+    rounds of this case (structured, from core's governed history). The current
+    turn's text holds only this round's answers; see assess_coverage.
 
     The depth check comes before the coverage check on purpose. Once the
     interview budget is spent, the answer is "stop asking and reason with what
@@ -126,7 +136,7 @@ def decide_mode(
         str(getattr(item, "priority", "") or "").upper() == "HIGH"
         for item in (missing_information or [])
     )
-    coverage = assess_coverage(accumulated_text or "")
+    coverage = assess_coverage(accumulated_text or "", answered_domains=answered_domains)
 
     if has_high or coverage.unknown_material():
         return INTERVIEW, REASON_MATERIALLY_MISSING

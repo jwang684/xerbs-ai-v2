@@ -161,7 +161,10 @@ class TestScenarioA_Routing:
         signature = inspect.signature(decide_mode)
         assert set(signature.parameters) == {
             "accumulated_text", "missing_information", "interview_depth",
-            "supports_interview"}
+            "supports_interview",
+            # X1D-P19B-FIX: the patient's structured answers from earlier
+            # rounds (core's governed history) -- patient facts, not model output.
+            "answered_domains"}
 
     def test_routing_is_reproducible(self):
         first = decide_mode(accumulated_text=SPARSE,

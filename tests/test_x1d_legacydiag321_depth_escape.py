@@ -14,10 +14,12 @@ excluding the submission being routed.
 
     turn 1  depth 0  ->  INTERVIEW
     turn 2  depth 1  ->  INTERVIEW
-    turn 3  depth 2  ->  INTERVIEW
-    turn 4  depth 3  ->  FULL_REASONING / INTERVIEW_DEPTH_REACHED
+    turn 3  depth 2  ->  FULL_REASONING / INTERVIEW_DEPTH_REACHED
 
-So ``depth >= MAX_INTERVIEW_TURNS`` reads as "three interview turns have
+(X1D-P19B-FIX: was three interview turns, one more than core shows adaptive
+questions for; turn 3 then left the patient with nothing to answer.)
+
+So ``depth >= MAX_INTERVIEW_TURNS`` reads as "two interview turns have
 happened; that is enough", and there is no off-by-one to argue about. The
 tests below walk that table explicitly rather than trusting the arithmetic.
 
@@ -97,8 +99,8 @@ class TestTheDepthTable:
     def test_c_turn_two_interviews(self):
         assert route(1) == (INTERVIEW, REASON_MATERIALLY_MISSING)
 
-    def test_d_turn_three_interviews(self):
-        assert route(2) == (INTERVIEW, REASON_MATERIALLY_MISSING)
+    def test_d_turn_three_takes_the_escape(self):
+        assert route(2) == (FULL_REASONING, REASON_DEPTH_REACHED)
 
     def test_e_turn_four_takes_the_escape(self):
         assert route(3) == (FULL_REASONING, REASON_DEPTH_REACHED)
@@ -107,10 +109,10 @@ class TestTheDepthTable:
         for depth in range(MAX_INTERVIEW_TURNS, MAX_INTERVIEW_TURNS + 5):
             assert route(depth) == (FULL_REASONING, REASON_DEPTH_REACHED)
 
-    def test_exactly_three_interview_turns_are_allowed(self):
+    def test_exactly_two_interview_turns_are_allowed(self):
         """The whole point, counted rather than reasoned about."""
         interviews = [d for d in range(0, 10) if route(d)[0] == INTERVIEW]
-        assert interviews == [0, 1, 2]
+        assert interviews == [0, 1]
         assert len(interviews) == MAX_INTERVIEW_TURNS
 
     def test_the_escape_is_actually_reachable_from_the_contract(self):

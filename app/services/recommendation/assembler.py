@@ -1,3 +1,5 @@
+import inspect
+
 from app.schemas.intake import RecommendationRequest
 from app.schemas.recommendation import (
     FormulaCandidate,
@@ -35,6 +37,7 @@ from app.services.interview.mode import (
     decide_mode,
     provider_supports_interview,
 )
+from app.services.interview import answers as carried_answers
 from app.services.telemetry.clarification_rejection import outcome_flags
 from app.services.clarification.coverage import (
     KNOWN,
@@ -51,6 +54,15 @@ from app.services.clarification.coverage import (
 
 
 PROMPT_VERSION = "xerbs-v2-recommendation-0.10-convergence-base44-contract"
+
+
+def _accepts_kwarg(func, name: str) -> bool:
+    """Whether a provider method takes ``name`` (explicitly or via **kwargs)."""
+    try:
+        params = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 class RecommendationAssembler:
@@ -112,12 +124,17 @@ class RecommendationAssembler:
         # interview should continue -- see interview/mode.py for why.
         # -------------------------------------------------------------
         accumulated_text = " ".join([request.text_input or "", *request.symptoms])
+        # X1D-P19B-FIX: answers from earlier rounds of this case, structured.
+        # The text above holds only this round's answers.
+        case_answers = carried_answers.patient_answers(request)
+        case_answered_domains = carried_answers.answered_domains(request)
         mode, mode_reason = decide_mode(
             accumulated_text=accumulated_text,
             missing_information=self.reasoning.analyze(
                 request, []).missing_information,
             interview_depth=getattr(request, "interview_depth", 0),
             supports_interview=provider_supports_interview(self.provider),
+            answered_domains=sorted(case_answered_domains),
         )
         interview_mode = mode == INTERVIEW
 
@@ -143,6 +160,12 @@ class RecommendationAssembler:
         # accumulated model opinion is precisely how a working guess becomes a
         # conclusion. It re-derives from patient evidence, and is allowed to
         # disagree with the interview -- that disagreement is signal.
+        #
+        # X1D-P19B-FIX: "nothing" meant no model opinion, and it still does.
+        # It had also meant no PATIENT answers from earlier rounds, which are
+        # evidence, not opinion: the full-reasoning turn re-derived from text
+        # holding only the latest round. It now receives the patient's own
+        # answers (field + value, no model wording, no prior differential).
         carry = getattr(request, "interview_state", None)
         if interview_mode:
             # X1D-LEGACYDIAG4.5: which domains the patient has already
@@ -154,7 +177,8 @@ class RecommendationAssembler:
                 answered_now = {
                     key for key, state in assess_coverage(
                         " ".join([request.text_input or "",
-                                  *request.symptoms])).states.items()
+                                  *request.symptoms]),
+                        answered_domains=case_answered_domains).states.items()
                     if state == KNOWN}
             except Exception:  # noqa: BLE001 - a prompt aid never breaks a turn
                 answered_now = set()
@@ -169,6 +193,10 @@ class RecommendationAssembler:
                 known_domains=sorted(answered_now),
             )
         else:
+            extra = ({"patient_answers": case_answers}
+                     if case_answers and _accepts_kwarg(
+                         self.provider.generate_recommendation, "patient_answers")
+                     else {})
             result = await self.provider.generate_recommendation(
                 text_input=request.text_input,
                 symptoms=request.symptoms,
@@ -177,6 +205,7 @@ class RecommendationAssembler:
                 image_data=request.image_data,
                 language=request.language,
                 on_display_text=on_display_text,
+                **extra,
             )
 
         if on_provider_result is not None:
@@ -384,7 +413,8 @@ class RecommendationAssembler:
             eligible_domains = required_domains | set(
                 signals.contradiction_domains)
             diag_required = set(required_domains)
-            coverage = assess_coverage(accumulated_text, eligible_domains)
+            coverage = assess_coverage(accumulated_text, eligible_domains,
+                                       answered_domains=case_answered_domains)
 
             # The reasoning engine appends to missing_information and
             # followup_questions in lockstep, so index i pairs. If that ever

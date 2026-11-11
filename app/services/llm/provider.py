@@ -77,7 +77,7 @@ FULL_REASONING = "FULL_REASONING"
 
 class LLMProvider(ABC):
     @abstractmethod
-    async def generate_recommendation(self, *, text_input: str, symptoms: list[str], goals: list[str], constraints: list[str], image_data: str | None, language: str) -> ProviderResult:
+    async def generate_recommendation(self, *, text_input: str, symptoms: list[str], goals: list[str], constraints: list[str], image_data: str | None, language: str, patient_answers: list | None = None) -> ProviderResult:
         raise NotImplementedError
 
     async def generate_interview(self, *, text_input: str, symptoms: list[str], language: str, on_display_text=None, carry_state: dict | None = None, known_domains: list | None = None) -> ProviderResult:

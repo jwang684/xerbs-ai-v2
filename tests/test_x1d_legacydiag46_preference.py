@@ -424,7 +424,7 @@ class TestEarlierPhasesIntact:
         assert cov.MAX_ADAPTIVE_WHEN_OPEN == 3
         assert cov.MAX_ADAPTIVE_WHEN_NARROWING == 1
         assert cov.MAX_VISIBLE_QUESTIONS_PER_TURN == 4
-        assert MAX_INTERVIEW_TURNS == 3
+        assert MAX_INTERVIEW_TURNS == 2   # X1D-P19B-FIX: aligned with core's budget (was 3)
 
     def test_36_37_one_provider_call_and_no_second_generator(self):
         from app.services.recommendation import assembler as module

@@ -672,6 +672,7 @@ class OpenAICompatibleProvider(LLMProvider):
         image_data: str | None,
         language: str,
         on_display_text=None,
+        patient_answers: list | None = None,
     ) -> ProviderResult:
 
         user_payload = {
@@ -682,6 +683,21 @@ class OpenAICompatibleProvider(LLMProvider):
             "language": language,
             "image_supplied": bool(image_data),
         }
+        if patient_answers:
+            # X1D-P19B-FIX: the patient's own answers from earlier rounds of
+            # this case (text_input holds only the latest round). Patient
+            # facts, not model opinion: field identity + the patient's value.
+            user_payload["EARLIER_PATIENT_ANSWERS"] = {
+                "note": ("Answers the patient gave in earlier rounds of this same "
+                         "case, keyed by the field the question was asked under. "
+                         "They are patient-reported facts. An answer such as "
+                         "不清楚 means the patient does not know. A field that is "
+                         "absent was not answered and must not be read as "
+                         "negative."),
+                "answers": [{"field": a.get("question_field"), "domain": a.get("domain"),
+                             "answer": a.get("answer")}
+                            for a in patient_answers if isinstance(a, dict)],
+            }
 
         content: str | list[dict] = json.dumps(
             user_payload,

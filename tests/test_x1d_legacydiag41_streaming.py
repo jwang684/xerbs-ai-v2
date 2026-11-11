@@ -416,7 +416,7 @@ class TestNoRegression:
         from app.services.interview.mode import (
             MAX_INTERVIEW_TURNS, REASON_DEPTH_REACHED, decide_mode)
 
-        assert MAX_INTERVIEW_TURNS == 3
+        assert MAX_INTERVIEW_TURNS == 2   # X1D-P19B-FIX: aligned with core's budget (was 3)
         mode, reason = decide_mode(accumulated_text="咳嗽3天。",
                                    missing_information=[],
                                    interview_depth=3)
