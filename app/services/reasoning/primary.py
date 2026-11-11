@@ -34,6 +34,19 @@ INVALID_PRIMARY_HYPOTHESIS = "INVALID_PRIMARY_HYPOTHESIS"
 # Engineering/governance explanations, not clinical judgments.
 PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS = "PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS"
 SECONDARY_GOVERNED_MATCH_NOT_USED = "SECONDARY_GOVERNED_MATCH_NOT_USED"
+# X1D-P20: one hypothesis name whose components equal two or more DIFFERENT
+# governed patterns (e.g. "风热犯肺，风寒束表"). Taking the first match let corpus
+# insertion order -- not the model, not a clinician -- decide which pattern
+# anchored retrieval. Such a name is ambiguous and fails closed, exactly like an
+# ambiguous primary (PRIMARY_ANCHORED_FAIL_CLOSED_V1). No equivalence is added.
+MULTIPLE_GOVERNED_PATTERNS_MATCHED = "PRIMARY_MATCHES_MULTIPLE_GOVERNED_PATTERNS"
+
+
+def single_governed_match(matches, key="pattern_id"):
+    """The matches when they name exactly one governed pattern, else [] (ambiguous)."""
+    items = list(matches or [])
+    ids = {(m.get(key) if isinstance(m, dict) else getattr(m, key, None)) for m in items}
+    return items if len(ids) <= 1 else []
 
 
 @dataclass(frozen=True)

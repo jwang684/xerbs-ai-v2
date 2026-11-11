@@ -489,6 +489,7 @@ PRIMARY_ANCHORED = RETRIEVAL_POLICY
 # The pre-P15 rule (every matched hypothesis pooled), kept ONLY as a historical simulation.
 POOLED_ALL_HYPOTHESES_HISTORICAL = "POOLED_ALL_HYPOTHESES_HISTORICAL"
 PRIMARY_NOT_SELECTED = "PRIMARY_NOT_SELECTED"
+MULTIPLE_GOVERNED_PATTERNS = "MULTIPLE_GOVERNED_PATTERNS_AMBIGUOUS"
 
 
 def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION,
@@ -506,7 +507,12 @@ def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION,
     explanations, matched_ids = [], []
     for h in turn.hypotheses:
         matches = match_patterns(snap, h.name, matcher)
-        if matches:
+        if len({m.pattern_id for m in matches}) > 1:
+            # X1D-P20: mirrors the engine -- a name naming two different governed
+            # patterns is ambiguous and anchors on neither.
+            explanations.append((h.name, MULTIPLE_GOVERNED_PATTERNS, None))
+            matched_ids.append(None)
+        elif matches:
             m = matches[0]
             explanations.append((h.name, m.explanation, m.pattern_name))
             matched_ids.append(m.pattern_id)
