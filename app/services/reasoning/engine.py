@@ -5,8 +5,8 @@ from app.services.knowledge.resolver import KnowledgeResolver
 from app.services.reasoning.contradictions import ContradictionEngine
 from app.services.reasoning.primary import (
     AMBIGUOUS_PRIMARY_HYPOTHESIS, INVALID_PRIMARY_HYPOTHESIS, PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS,
-    MULTIPLE_GOVERNED_PATTERNS_MATCHED, SECONDARY_GOVERNED_MATCH_NOT_USED, primary_governed_assessment,
-    select_primary, single_governed_match, valid_confidence)
+    MULTIPLE_GOVERNED_PATTERNS_MATCHED, PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN, SECONDARY_GOVERNED_MATCH_NOT_USED,
+    negated_or_uncertain, primary_governed_assessment, select_primary, single_governed_match, valid_confidence)
 
 CORE_FIELDS = [
     ("duration", "病程/起病时间尚不明确", "症状持续多久？何时开始？"),
@@ -101,7 +101,7 @@ class DiagnosticReasoningEngine:
                 continue
             missing.append(MissingInformation(field=field,reason=reason,question=q,priority=priority,answer_status=UNANSWERED)); questions.append(q)
 
-        assessments=[]; source_verified_match=False; primary_ambiguous_match=False
+        assessments=[]; source_verified_match=False; primary_ambiguous_match=False; primary_qualified=False
         # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P15: every hypothesis is still matched,
         # kept and reported; only the unambiguous primary may drive retrieval.
         selection=select_primary(model_patterns)
@@ -116,6 +116,9 @@ class DiagnosticReasoningEngine:
             unique=single_governed_match(matches)
             if matches and not unique and selection.selected and index==selection.index: primary_ambiguous_match=True
             matches=unique
+            # X1D-P20-SAFETY-FIX: a negated/excluded/uncertain primary label anchors on nothing.
+            if selection.selected and index==selection.index and negated_or_uncertain(name):
+                primary_qualified=True; matches=[]
             if matches and matches[0].get("governance_basis")=="SOURCE_VERIFIED": source_verified_match=True
             support=[]
             reasoning=str(p.get("reasoning","")).strip()
@@ -133,7 +136,8 @@ class DiagnosticReasoningEngine:
         # X1D-PATIENT-DIAGNOSIS-FORMULA-E2E-P7: said out loud, never implied.
         if source_verified_match: flags.append("PATTERN_SOURCE_VERIFIED_NOT_CLINICALLY_REVIEWED")
         if selection.outcome in (AMBIGUOUS_PRIMARY_HYPOTHESIS, INVALID_PRIMARY_HYPOTHESIS): flags.append(selection.outcome)
-        if primary_ambiguous_match: flags.append(MULTIPLE_GOVERNED_PATTERNS_MATCHED)
+        if primary_qualified: flags.append(PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN)
+        elif primary_ambiguous_match: flags.append(MULTIPLE_GOVERNED_PATTERNS_MATCHED)
         elif selection.selected and primary is None: flags.append(PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS)
         if any(x.corpus_match and not x.is_primary and (primary is None or x.pattern_id!=primary.pattern_id) for x in assessments):
             flags.append(SECONDARY_GOVERNED_MATCH_NOT_USED)

@@ -36,7 +36,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from app.services.governance import applicability as scope
 from app.services.governance import lifecycle
 from app.services.knowledge.pattern_match import _BOUNDARY, _normalize, match_mechanism, name_components
-from app.services.reasoning.primary import RETRIEVAL_POLICY, select_primary
+from app.services.reasoning.primary import RETRIEVAL_POLICY, negated_or_uncertain, select_primary
 
 REVIEWED = "REVIEWED"
 SOURCE_VERIFIED = lifecycle.SOURCE_VERIFIED
@@ -490,6 +490,7 @@ PRIMARY_ANCHORED = RETRIEVAL_POLICY
 POOLED_ALL_HYPOTHESES_HISTORICAL = "POOLED_ALL_HYPOTHESES_HISTORICAL"
 PRIMARY_NOT_SELECTED = "PRIMARY_NOT_SELECTED"
 MULTIPLE_GOVERNED_PATTERNS = "MULTIPLE_GOVERNED_PATTERNS_AMBIGUOUS"
+NEGATED_OR_UNCERTAIN = "PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN"
 
 
 def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION,
@@ -521,6 +522,11 @@ def classify_turn(snap, turn: TurnInput, matcher: Matcher = PRODUCTION,
             matched_ids.append(None)
     any_match = any(matched_ids)
     selection = select_primary([{"name": h.name, "confidence": h.confidence} for h in turn.hypotheses])
+    # X1D-P20-SAFETY-FIX: mirrors the engine -- a negated/uncertain primary label anchors on nothing.
+    if selection.selected and negated_or_uncertain(turn.hypotheses[selection.index].name):
+        matched_ids[selection.index] = None
+        explanations[selection.index] = (turn.hypotheses[selection.index].name, NEGATED_OR_UNCERTAIN, None)
+        any_match = any(matched_ids)
     primary_match = selection.selected and matched_ids[selection.index] is not None
     if policy == POOLED_ALL_HYPOTHESES_HISTORICAL:
         primary_match = bool(matched_ids) and matched_ids[0] is not None

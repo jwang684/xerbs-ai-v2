@@ -42,6 +42,26 @@ SECONDARY_GOVERNED_MATCH_NOT_USED = "SECONDARY_GOVERNED_MATCH_NOT_USED"
 MULTIPLE_GOVERNED_PATTERNS_MATCHED = "PRIMARY_MATCHES_MULTIPLE_GOVERNED_PATTERNS"
 
 
+# X1D-P20-SAFETY-FIX: a primary label that negates, excludes or leaves uncertain
+# the syndrome it names ("风热犯肺（已排除）", "风热犯肺（疑似）") is not a confirmed
+# primary. The matcher splits names at punctuation and compares components, so a
+# qualifier in its own component used to be ignored and the governed name still
+# matched. The raw name is checked for these markers BEFORE matching; nothing is
+# stripped, and a qualifier whose scope cannot be told apart fails the whole name.
+# Explicitly enumerated and deliberately conservative: a false positive costs a
+# formula (fail closed), never adds one. Adds no positive alias or equivalence.
+NEGATION_MARKERS = ("排除", "除外", "不支持", "不考虑", "不符合", "不是", "并非", "非", "否定", "未见")
+UNCERTAINTY_MARKERS = ("疑似", "可疑", "可能", "待排", "待定", "待查", "待鉴别", "不除外", "倾向", "考虑",
+                       "拟诊", "存疑", "？", "?")
+PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN = "PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN"
+
+
+def negated_or_uncertain(name) -> bool:
+    """True when the raw hypothesis name carries any enumerated negation/uncertainty marker."""
+    raw = str(name or "")
+    return any(m in raw for m in NEGATION_MARKERS + UNCERTAINTY_MARKERS)
+
+
 def single_governed_match(matches, key="pattern_id"):
     """The matches when they name exactly one governed pattern, else [] (ambiguous)."""
     items = list(matches or [])

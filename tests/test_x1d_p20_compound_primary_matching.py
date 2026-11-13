@@ -11,10 +11,15 @@ equivalence: a single name whose components equal two DIFFERENT governed
 patterns ("风热犯肺，风寒束表") used to anchor on whichever pattern had been
 ingested first. It now anchors on neither.
 
-Two behaviours are deliberately UNCHANGED and pinned as-is, because changing
-them needs a clinical decision, not an engineering one (see the P20 report):
-a governed pattern combined with a different, non-governed pattern
-("风热犯肺，痰热壅肺"), and a qualifier on the governed name ("风热犯肺（已排除）").
+X1D-P20-SAFETY-FIX adds a second fail-closed guard: a primary label carrying an
+enumerated negation, exclusion or uncertainty marker ("风热犯肺（已排除）",
+"疑似风热犯肺", "风热犯肺？") anchors on nothing (PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN).
+
+Compound labels that pair a governed pattern with another component
+("风热犯肺，痰热壅肺", "风热犯肺，热壅于肺", "风寒束表，肺气失宣") are deliberately
+UNCHANGED and pinned as-is: telling an explanatory mechanism from a competing
+syndrome is a clinical classification, not an engineering one (see the
+P20-SAFETY-FIX report).
 
 All objects are SYNTHETIC in-memory fixtures; the hypotheses are scripted.
 """
@@ -184,9 +189,67 @@ def test_single_governed_match_helper():
 # ----------------------------------------------------------------------
 # Unchanged, pending an explicit clinical decision (pinned so a change is deliberate)
 # ----------------------------------------------------------------------
-@pytest.mark.parametrize("name", ["风热犯肺，痰热壅肺", "风热犯肺，热壅于肺", "风热犯肺（已排除）"])
+@pytest.mark.parametrize("name", ["风热犯肺，痰热壅肺", "风热犯肺，热壅于肺"])
 def test_policy_pending_compound_labels_still_match_and_remain_gated(store, name):
     cough_slice(store)
     resp, primary = outcome(store, hyp(name, 0.8), context=None)
     assert primary.match_mechanism == COMPOUND_PIECE and primary.governed_pattern_name == "风热犯肺证"
     assert resp.formula_candidates == [] and resp.reasoning.condition_scope_required == ["cough_primary"]
+
+
+# ----------------------------------------------------------------------
+# X1D-P20-SAFETY-FIX: negated, excluded or uncertain primary labels
+# ----------------------------------------------------------------------
+QUALIFIED = ["风热犯肺（已排除）", "排除风热犯肺", "非风热犯肺", "不支持风热犯肺", "风热犯肺待排除",
+             "疑似风热犯肺", "风热犯肺（疑似）", "风热犯肺？", "可能风热犯肺", "风热犯肺（不除外）",
+             "考虑风热犯肺", "风寒束表（待定）"]
+
+
+@pytest.mark.parametrize("name", QUALIFIED)
+@pytest.mark.parametrize("ctx", [None, YES_NONE])
+def test_a_negated_excluded_or_uncertain_primary_never_qualifies(store, name, ctx):
+    cough_slice(store)
+    resp, primary = outcome(store, hyp(name, 0.8), context=ctx, text=FLU_TEXT)
+    assert resp.formula_candidates == []
+    assert resp.reasoning.condition_scope_required == []                 # no P19C question after rejection
+    assert primary.corpus_match is False and primary.pattern_id is None
+    assert P.PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN in resp.uncertainty_flags
+    assert P.PRIMARY_PATTERN_NOT_IN_GOVERNED_CORPUS not in resp.uncertainty_flags
+    assert resp.reasoning.ready_for_formula_retrieval is False
+    assert primary.name == name                                          # original model output preserved
+
+
+def test_the_marker_list_is_explicit_and_nothing_is_stripped():
+    assert P.negated_or_uncertain("风热犯肺（已排除）") and P.negated_or_uncertain("疑似风热犯肺")
+    assert not P.negated_or_uncertain("风热犯肺") and not P.negated_or_uncertain("风热犯肺证")
+    assert not P.negated_or_uncertain("风寒束表，肺气失宣")
+    assert "已排除" in "风热犯肺（已排除）"                                  # the label is never rewritten
+    assert P.NEGATION_MARKERS and P.UNCERTAINTY_MARKERS
+
+
+def test_a_qualified_secondary_never_blocks_or_selects(store):
+    cough_slice(store)
+    resp, _ = outcome(store, hyp("风寒束表", 0.8), hyp("疑似风热犯肺", 0.3), text=FLU_TEXT)
+    assert [c.name for c in resp.formula_candidates] == ["麻黄汤加味"]
+    assert P.PRIMARY_SYNDROME_NEGATED_OR_UNCERTAIN not in resp.uncertainty_flags
+
+
+def test_the_harness_mirrors_the_qualifier_guard():
+    snap = H.CorpusSnapshot(
+        environment="staging",
+        sources=(H.SourceSnap(SYN_SRC, "SOURCE_VERIFIED", 3, live_verification=True),),
+        entities=(H.EntitySnap("p-heat", "pattern", "风热犯肺证", "SOURCE_VERIFIED", 3, source_ids=(SYN_SRC,),
+                               live_verification=True, applicability=APPROVED),),
+        relationships=(), core_formula_names=())
+    r = H.classify_turn(snap, H.TurnInput(1, (H.Hypothesis("风热犯肺（已排除）", 0.8),)))
+    assert r.primary_match is False and r.hypothesis_explanations[0][1] == H.NEGATED_OR_UNCERTAIN
+    ok = H.classify_turn(snap, H.TurnInput(1, (H.Hypothesis("风热犯肺", 0.8),)))
+    assert ok.primary_match is True
+
+
+def test_an_accepted_primary_still_gets_the_approved_questions_in_order(store):
+    cough_slice(store)
+    resp, _ = outcome(store, hyp("风热犯肺", 0.8), context=None)
+    assert resp.reasoning.condition_scope_required == ["cough_primary"]
+    resp, _ = outcome(store, hyp("风热犯肺", 0.8), context={"cough_primary": "YES"})
+    assert resp.reasoning.condition_scope_required == ["cough_exclusion_features"]
